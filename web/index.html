@@ -1,0 +1,189 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>IPv6 Proxy Pool</title>
+  <link rel="stylesheet" href="./styles.css">
+  <script src="./app.js" defer></script>
+</head>
+<body>
+  <header class="app-header">
+    <div>
+      <p class="eyebrow">IPv6 Proxy Pool</p>
+      <h1>代理池管理</h1>
+    </div>
+    <div class="header-actions">
+      <span id="connectionState" class="status-badge" role="status">正在连接</span>
+      <button id="refreshButton" class="icon-button" type="button" title="刷新数据" aria-label="刷新数据">↻</button>
+    </div>
+  </header>
+
+  <main>
+    <nav class="tabs" aria-label="管理视图">
+      <button class="tab is-active" type="button" data-tab="overview">运行状态</button>
+      <button class="tab" type="button" data-tab="connection">连接信息</button>
+      <button class="tab" type="button" data-tab="leases">代理租约</button>
+      <button class="tab" type="button" data-tab="configuration">配置</button>
+    </nav>
+
+    <section id="overviewPanel" class="tab-panel is-active" data-panel="overview">
+      <div class="metric-grid" aria-label="运行指标">
+        <article class="metric"><span>服务状态</span><strong id="serviceStatus">未知</strong></article>
+        <article class="metric"><span>运行时间</span><strong id="uptime">--</strong></article>
+        <article class="metric"><span>客户端租约</span><strong id="activeLeases">--</strong></article>
+        <article class="metric"><span>常驻备用</span><strong id="standbyLeases">--</strong></article>
+        <article class="metric"><span>池容量</span><strong id="poolUsage">--</strong></article>
+        <article class="metric"><span>累计请求</span><strong id="requestCount">--</strong></article>
+        <article class="metric"><span>上次轮换</span><strong id="lastRotation">--</strong></article>
+      </div>
+
+      <section class="content-section">
+        <div class="section-heading">
+          <div>
+            <h2>常开端口</h2>
+            <p>当前监听并保持可用的代理入口。</p>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>端口</th><th>协议</th><th>模式</th><th>IPv6</th><th>状态</th><th>请求数</th></tr></thead>
+            <tbody id="portTableBody"><tr><td colspan="6" class="empty-state">正在加载端口状态</td></tr></tbody>
+          </table>
+        </div>
+      </section>
+    </section>
+
+    <section id="connectionPanel" class="tab-panel" data-panel="connection" hidden>
+      <section class="content-section">
+        <div class="section-heading">
+          <div>
+            <h2>客户端连接信息</h2>
+            <p>填写到客户端配置表单的对接参数；浏览器地址栏的主机即对外可用的服务器地址。</p>
+          </div>
+          <div class="header-actions">
+            <button id="copyConnectionButton" type="button" class="secondary-button">复制全部</button>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>配置项</th><th>值</th><th>说明</th><th></th></tr></thead>
+            <tbody id="connectionTableBody"><tr><td colspan="4" class="empty-state">正在加载连接信息</td></tr></tbody>
+          </table>
+        </div>
+      </section>
+    </section>
+
+    <section id="leasesPanel" class="tab-panel" data-panel="leases" hidden>
+      <section class="content-section">
+        <div class="section-heading">
+          <div>
+            <h2>代理租约</h2>
+            <p>每个客户端持有一个独立端口和 IPv6；总数未超常驻备用数时不会被空闲回收，超出部分按空闲超时自动回收，回收/释放后会自动补充备用。</p>
+          </div>
+          <div class="header-actions">
+            <input id="leaseFilter" type="search" placeholder="筛选端口或 IPv6" aria-label="筛选代理租约">
+            <button id="createLeaseButton" type="button" class="primary-button">新建代理</button>
+            <button id="releaseIdleButton" type="button" class="secondary-button">释放空闲</button>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>租约 ID</th><th>端口</th><th>IPv6</th><th>创建时间</th><th>最后活动</th><th>请求数</th><th>持久</th><th>操作</th></tr></thead>
+            <tbody id="leaseTableBody"><tr><td colspan="8" class="empty-state">正在加载租约</td></tr></tbody>
+          </table>
+        </div>
+      </section>
+    </section>
+
+    <section id="configurationPanel" class="tab-panel" data-panel="configuration" hidden>
+      <form id="configForm" class="config-form">
+        <section class="content-section">
+          <div class="section-heading">
+            <div>
+              <h2>代理模式</h2>
+              <p>选择所有请求复用单端口，或让每个常开端口绑定独立 IPv6。</p>
+            </div>
+          </div>
+          <fieldset class="segmented-control">
+            <legend class="sr-only">代理模式</legend>
+            <label><input type="radio" name="mode" value="multiplex"><span>单端口复用</span></label>
+            <label><input type="radio" name="mode" value="per_ipv6"><span>一端口一 IPv6</span></label>
+          </fieldset>
+        </section>
+
+        <section class="content-section form-grid">
+          <label class="field">
+            <span>IPv6 前缀</span>
+            <input id="ipv6Prefix" name="ipv6Prefix" type="text" required placeholder="2001:db8::/64">
+          </label>
+          <label class="field">
+            <span>常驻备用租约数</span>
+            <input id="minLeases" name="minLeases" type="number" min="0" step="1" required>
+            <small>启动时预生成的备用代理数量；低于该数的租约不会被空闲回收。</small>
+          </label>
+          <label class="field">
+            <span>最大租约数</span>
+            <input id="maxLeases" name="maxLeases" type="number" min="1" step="1" required>
+            <small>常驻备用 + 客户端租约的总上限。</small>
+          </label>
+          <label class="field">
+            <span>空闲超时（秒）</span>
+            <input id="idleTimeout" name="idleTimeout" type="number" min="0" step="1">
+            <small>仅在租约总数超过常驻备用数时才生效。</small>
+          </label>
+          <label class="field">
+            <span>轮换时间（秒）</span>
+            <input id="rotateAfter" name="rotateAfter" type="number" min="0" step="1">
+            <small>设为 0 可关闭按时间轮换。</small>
+          </label>
+          <label class="field">
+            <span>轮换请求数</span>
+            <input id="rotateRequests" name="rotateRequests" type="number" min="0" step="1">
+            <small>设为 0 可关闭按请求数轮换。</small>
+          </label>
+          <label class="field">
+            <span>SOCKS5 监听地址</span>
+            <input id="socksListenAddress" name="socksListenAddress" type="text" required placeholder="[::]:1080">
+          </label>
+          <label class="field">
+            <span>端口范围起始</span>
+            <input id="portStart" name="portStart" type="number" min="1" max="65535" step="1" required>
+          </label>
+          <label class="field">
+            <span>端口范围结束</span>
+            <input id="portEnd" name="portEnd" type="number" min="1" max="65535" step="1" required>
+          </label>
+          <label class="field">
+            <span>管理界面监听地址</span>
+            <input id="adminListenAddress" name="adminListenAddress" type="text" required placeholder="[::]:8080">
+          </label>
+          <label class="field">
+            <span>管理令牌（留空则不启用）</span>
+            <input id="adminToken" name="adminToken" type="text" autocomplete="off" placeholder="至少 8 位，客户端通过 Bearer 携带">
+            <small>启用后所有 /v1/* 请求都需要令牌，客户端用 -token 或环境变量提供。</small>
+          </label>
+        </section>
+
+        <div class="form-actions">
+          <span id="saveMessage" role="status" aria-live="polite"></span>
+          <button id="resetButton" type="button" class="secondary-button">撤销更改</button>
+          <button id="saveButton" type="submit" class="primary-button">保存配置</button>
+        </div>
+      </form>
+    </section>
+  </main>
+
+  <template id="errorTemplate">
+    <div class="error-banner" role="alert"></div>
+  </template>
+  <div id="notificationRegion" class="notification-region" aria-live="polite"></div>
+</body>
+</html>
+
+
+
+
+
+

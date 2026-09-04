@@ -1,0 +1,23 @@
+{
+    "ipv6_prefix":  "2001:db8::/64",
+    "min_leases":  1024,
+    "max_leases":  2048,
+    "idle_timeout":  3600000000000,
+    "rotate_after":  0,
+    "rotate_requests":  0,
+    "socks":  {
+                  "mode":  "per_ipv6",
+                  "listen_address":  "[::]:1080",
+                  "port_start":  20000,
+                  "port_end":  22047,
+                  "always_on_ports":  [
+                                          20000,
+                                          20001,
+                                          20002
+                                      ]
+              },
+    "admin":  {
+                  "listen_address":  "[::]:8080",
+                  "token":  ""
+              }
+}

@@ -1,0 +1,9 @@
+ipv6-incognito
+.git
+.gitignore
+*.exe
+*.log
+config.json
+data
+.vscode
+.idea

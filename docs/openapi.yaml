@@ -1,0 +1,567 @@
+openapi: 3.0.3
+info:
+  title: IPv6 代理池管理接口
+  description: |
+    ipv6-proxy-pool 管理服务 REST 接口。客户端程序通过该接口申请、查询、更换、回收、销毁
+    IPv6 SOCKS5 代理租约。
+
+    常驻备用模型：池子始终保有 min_leases 个备用租约（role=standby），申请时优先认领备用；
+    空闲回收仅在租约总数超过 min_leases 时执行，释放的资源优先转为全新备用。
+
+    认证：若服务配置了 admin.token，所有 /v1/* 请求必须携带
+    `Authorization: Bearer <token>`；/healthz 始终开放。
+    错误格式统一为 {"error": "..."}。
+  version: 1.1.0
+servers:
+  - url: http://{host}:8080
+    description: 服务器地址与 admin.listen_address 端口
+    variables:
+      host:
+        default: 服务器IP
+tags:
+  - name: 系统
+    description: 健康检查与服务状态
+  - name: 租约
+    description: 客户端代理租约的完整生命周期（申请/查询/修改/销毁/换 IP/回收换新）
+  - name: 配置
+    description: 管理员配置读写
+security:
+  - bearerAuth: []
+paths:
+  /healthz:
+    get:
+      tags: [系统]
+      summary: 健康检查（无需令牌）
+      security: []
+      responses:
+        "200":
+          description: 服务在线
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status]
+                properties:
+                  status:
+                    type: string
+                    example: ok
+
+  /v1/status:
+    get:
+      tags: [系统]
+      summary: 服务状态与容量信息
+      responses:
+        "200":
+          description: 服务状态对象
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Status"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /v1/config:
+    get:
+      tags: [配置]
+      summary: 读取当前配置
+      description: 注意：响应会回显 admin.token，请勿向普通客户端暴露。
+      responses:
+        "200":
+          description: 当前配置
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Config"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+    put:
+      tags: [配置]
+      summary: 覆盖保存配置
+      description: |
+        保存后需要重启服务才完整生效（restart_required=true）。
+        admin.token 传空字符串表示清除令牌。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/Config"
+      responses:
+        "200":
+          description: 保存结果
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [saved, restart_required, config]
+                properties:
+                  saved:
+                    type: boolean
+                    example: true
+                  restart_required:
+                    type: boolean
+                    example: true
+                  config:
+                    $ref: "#/components/schemas/Config"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "503":
+          description: 服务未启用配置持久化（未指定 -config 文件）
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /v1/leases:
+    get:
+      tags: [租约]
+      summary: 租约列表
+      description: 默认只返回客户端租约（role=client）；include_standby=true 时包含常驻备用。
+      parameters:
+        - name: include_standby
+          in: query
+          required: false
+          description: 是否包含常驻备用租约
+          schema:
+            type: boolean
+            default: false
+      responses:
+        "200":
+          description: 租约列表（可为空数组）
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Lease"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+    post:
+      tags: [租约]
+      summary: 创建租约（客户端申请代理）
+      description: |
+        为客户端分配出口 IPv6（per_ipv6 模式同时分配独立 SOCKS5 端口并启动监听器）。
+        常驻备用就绪时立即认领一个备用（瞬时返回）；备用耗尽则新建租约，总数最多 max_leases。
+        id 已存在时幂等返回现有租约。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateLeaseRequest"
+            examples:
+              普通申请:
+                value:
+                  id: client-a
+                  persistent: false
+              常驻申请:
+                value:
+                  id: client-b
+                  persistent: true
+      responses:
+        "201":
+          description: 创建成功（id 已存在时也返回 201 与当前租约）
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Lease"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "409":
+          description: 租约容量已满或端口不可用
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: 监听器启动失败（新建租约会回滚）
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /v1/leases/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: 客户端租约标识
+        schema:
+          type: string
+          minLength: 1
+        example: client-a
+    get:
+      tags: [租约]
+      summary: 查询单个租约
+      responses:
+        "200":
+          description: 租约对象
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Lease"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    patch:
+      tags: [租约]
+      summary: 修改租约属性（persistent 常驻开关）
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateLeaseRequest"
+      responses:
+        "200":
+          description: 更新后的租约
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Lease"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    delete:
+      tags: [租约]
+      summary: 销毁租约（释放端口与 IPv6）
+      description: |
+        per_ipv6 模式下同步停止监听器；备用未满 min_leases 时旧租约转为全新备用（新 IPv6、
+        端口保留），备用已满时端口才回到空闲池。成功无响应体。
+      responses:
+        "204":
+          description: 销毁成功
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          description: 监听器停止失败
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /v1/leases/{id}/rotate:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: 客户端租约标识
+        schema:
+          type: string
+          minLength: 1
+        example: client-a
+    post:
+      tags: [租约]
+      summary: 更换出口 IP（端口不变）
+      description: |
+        为该租约分配新的随机 IPv6 出口地址；per_ipv6 模式下 SOCKS5 端口保持不变，
+        客户端无需修改代理配置。created_at/last_used_at 重置，requests 清零，persistent 不变。
+      responses:
+        "200":
+          description: 更换后的租约（ipv6 为新地址）
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Lease"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /v1/leases/{id}/recycle:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: 客户端租约标识
+        schema:
+          type: string
+          minLength: 1
+        example: client-a
+    post:
+      tags: [租约]
+      summary: 回收换新（释放并立即重新获取）
+      description: |
+        释放当前租约并立即以同一 id 重新申请：旧租约按释放规则转为备用或销毁，
+        客户端拿到全新 IPv6（per_ipv6 模式下通常还有新端口）。效果类似 rotate，
+        但会彻底重建租约与监听器。持久租约（persistent=true）不支持 recycle。
+      responses:
+        "200":
+          description: 重新获取的租约（ipv6 为新地址，port 为新端口）
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Lease"
+        "400":
+          description: 持久租约不能 recycle，请改用 rotate
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: 容量已满（回收后重新申请失败）
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: 监听器启动失败
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /v1/leases:release-idle:
+    post:
+      tags: [租约]
+      summary: 立即释放所有空闲租约
+      description: |
+        手动触发空闲回收：释放所有 persistent=false 且空闲超过 idle_timeout 的客户端租约。
+        仅当租约总数超过 min_leases（常驻保底）时执行；释放的资源优先转为全新备用。
+      responses:
+        "200":
+          description: 释放结果
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [released]
+                properties:
+                  released:
+                    type: integer
+                    description: 本次实际释放的租约数量
+                    example: 3
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: 管理令牌，值为配置 admin.token；未配置令牌时无需携带。
+  responses:
+    BadRequest:
+      description: 请求非法（JSON 语法错误、缺少必填字段、含未定义字段）
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    Unauthorized:
+      description: 缺少或错误的令牌
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    NotFound:
+      description: 租约不存在
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+  schemas:
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: string
+          description: 人类可读的错误描述
+          example: lease not found
+      description: 所有非 2xx 响应的统一格式
+
+    Lease:
+      type: object
+      description: 一条代理租约（客户端租约或常驻备用）
+      required: [id, ipv6, persistent, role, created_at, last_used_at, requests]
+      properties:
+        id:
+          type: string
+          description: 租约标识（客户端名），创建后不可修改；备用租约为 pool-<n> 形式
+          example: client-a
+        ipv6:
+          type: string
+          description: 该租约的出站源 IPv6 地址
+          example: "2001:470:xxxx:yyyy::a1"
+        port:
+          type: integer
+          minimum: 0
+          description: per_ipv6 模式下的 SOCKS5 端口；multiplex 模式下为 0 且可省略
+          example: 20010
+        persistent:
+          type: boolean
+          description: true 时不受空闲回收影响，且不可 recycle
+          example: false
+        role:
+          type: string
+          enum: [client, standby]
+          description: client=客户端租约；standby=常驻备用（待分配，端口 + 未使用的 IPv6）
+          example: client
+        created_at:
+          type: string
+          format: date-time
+          description: 创建时间（rotate/recycle 后重置）
+        last_used_at:
+          type: string
+          format: date-time
+          description: 最近一次 SOCKS5 连接使用时间
+        requests:
+          type: integer
+          format: int64
+          description: 累计请求数（rotate/recycle 后清零）
+          example: 5
+
+    CreateLeaseRequest:
+      type: object
+      required: [id]
+      properties:
+        id:
+          type: string
+          minLength: 1
+          description: 客户端唯一标识（可作用户名）
+          example: client-a
+        persistent:
+          type: boolean
+          default: false
+          description: true 表示常驻租约，不受空闲回收影响
+      additionalProperties: false
+
+    UpdateLeaseRequest:
+      type: object
+      required: [persistent]
+      properties:
+        persistent:
+          type: boolean
+          example: true
+      additionalProperties: false
+
+    Status:
+      type: object
+      required: [status, lease_count, persistent_count, standby_count, min_leases, max_leases, ipv6_prefix, socks_mode, socks_listen_address]
+      properties:
+        status:
+          type: string
+          enum: [ok]
+          description: 固定为 "ok"
+        lease_count:
+          type: integer
+          description: 当前客户端租约数（不含常驻备用）
+          example: 12
+        persistent_count:
+          type: integer
+          description: 持久租约数（含 always_on_ports）
+          example: 3
+        standby_count:
+          type: integer
+          description: 常驻备用租约数（当前待分配数量）
+          example: 1024
+        min_leases:
+          type: integer
+          description: 配置的常驻保底数量
+          example: 1024
+        max_leases:
+          type: integer
+          description: 租约总量上限（备用 + 客户端）
+          example: 2048
+        ipv6_prefix:
+          type: string
+          description: 配置的 IPv6 前缀
+          example: "2001:470:xxxx:yyyy::/64"
+        socks_mode:
+          type: string
+          enum: [multiplex, per_ipv6]
+        socks_listen_address:
+          type: string
+          example: "[::]:1080"
+
+    Config:
+      type: object
+      required: [ipv6_prefix, min_leases, max_leases, idle_timeout, rotate_after, rotate_requests, socks, admin]
+      properties:
+        ipv6_prefix:
+          type: string
+          description: 生成租约地址的 IPv6 CIDR 前缀
+          example: "2001:470:xxxx:yyyy::/64"
+        min_leases:
+          type: integer
+          minimum: 0
+          description: 常驻备用租约数（启动预生成、释放后自动补充、低于该数不被空闲回收）；须 ≤ max_leases
+          example: 1024
+        max_leases:
+          type: integer
+          minimum: 1
+          description: 租约总量上限（备用 + 客户端）
+          example: 2048
+        idle_timeout:
+          type: integer
+          format: int64
+          description: 空闲回收超时（纳秒），仅当总数超过 min_leases 时生效；0 表示不回收
+          example: 3600000000000
+        rotate_after:
+          type: integer
+          format: int64
+          description: 按时间轮换 IPv6 间隔（纳秒）；0 关闭
+          example: 3600000000000
+        rotate_requests:
+          type: integer
+          format: int64
+          description: 达到请求数后轮换（次）；0 关闭
+          example: 0
+        socks:
+          $ref: "#/components/schemas/SOCKSConfig"
+        admin:
+          $ref: "#/components/schemas/AdminConfig"
+
+    SOCKSConfig:
+      type: object
+      required: [mode, listen_address, port_start, port_end]
+      properties:
+        mode:
+          type: string
+          enum: [multiplex, per_ipv6]
+        listen_address:
+          type: string
+          description: SOCKS5 监听地址（multiplex 模式直接监听该地址）
+          example: "[::]:1080"
+        port_start:
+          type: integer
+          description: per_ipv6 动态端口范围起点
+          example: 20000
+        port_end:
+          type: integer
+          description: per_ipv6 动态端口范围终点（范围大小须 ≥ max_leases）
+          example: 22047
+        always_on_ports:
+          type: array
+          description: 启动时保持监听的常开端口（仅 per_ipv6）
+          items:
+            type: integer
+          example: [20000, 20001]
+
+    AdminConfig:
+      type: object
+      required: [listen_address]
+      properties:
+        listen_address:
+          type: string
+          description: 管理 API 与 Web 监听地址
+          example: "[::]:8080"
+        token:
+          type: string
+          minLength: 8
+          description: 管理令牌；为空表示不启用认证。PUT 时传空字符串可清除令牌。
+          writeOnly: true

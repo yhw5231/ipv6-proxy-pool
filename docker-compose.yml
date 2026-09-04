@@ -1,0 +1,19 @@
+services:
+  ipv6-proxy-pool:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: ipv6-proxy-pool
+    restart: unless-stopped
+    network_mode: host
+    cap_add:
+      - NET_ADMIN
+    ulimits:
+      nofile:
+        soft: 65535
+        hard: 65535
+    volumes:
+      - ./config.json:/app/config.json
+    command:
+      - -config
+      - /app/config.json
