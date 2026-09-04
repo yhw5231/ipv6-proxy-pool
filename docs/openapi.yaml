@@ -451,15 +451,19 @@ components:
 
     Status:
       type: object
-      required: [status, lease_count, persistent_count, standby_count, min_leases, max_leases, ipv6_prefix, socks_mode, socks_listen_address]
+      required: [status, uptime_seconds, lease_count, persistent_count, standby_count, total_requests, listener_count, listeners, min_leases, max_leases, ipv6_prefix, socks_mode, socks_listen_address, port_start, port_end, idle_timeout_seconds, rotate_after_seconds, rotate_requests, token_required]
       properties:
         status:
           type: string
           enum: [ok]
           description: 固定为 "ok"
+        uptime_seconds:
+          type: integer
+          description: 服务已运行秒数
+          example: 86400
         lease_count:
           type: integer
-          description: 当前客户端租约数（不含常驻备用）
+          description: 当前客户端租约数（不含常驻备用；含 always_on_ports 持久租约）
           example: 12
         persistent_count:
           type: integer
@@ -469,6 +473,28 @@ components:
           type: integer
           description: 常驻备用租约数（当前待分配数量）
           example: 1024
+        total_requests:
+          type: integer
+          format: int64
+          description: 全部租约累计成功转发的请求数
+          example: 45678
+        listener_count:
+          type: integer
+          description: per_ipv6 模式当前活跃的动态监听器数量（multiplex 恒为 0）
+          example: 12
+        listeners:
+          type: array
+          description: 活跃监听器列表
+          items:
+            type: object
+            required: [id, address]
+            properties:
+              id:
+                type: string
+                description: 租约 ID
+              address:
+                type: string
+                description: 监听地址
         min_leases:
           type: integer
           description: 配置的常驻保底数量
@@ -487,6 +513,35 @@ components:
         socks_listen_address:
           type: string
           example: "[::]:1080"
+        port_start:
+          type: integer
+          description: 动态端口范围起点
+          example: 20000
+        port_end:
+          type: integer
+          description: 动态端口范围终点
+          example: 22047
+        always_on_ports:
+          type: array
+          description: 配置的常开端口
+          items:
+            type: integer
+        idle_timeout_seconds:
+          type: integer
+          description: 空闲回收超时（秒，由配置的纳秒换算）
+          example: 3600
+        rotate_after_seconds:
+          type: integer
+          description: 按时间轮换间隔（秒，0 表示关闭）
+          example: 0
+        rotate_requests:
+          type: integer
+          format: int64
+          description: 按请求数轮换阈值（0 表示关闭）
+          example: 0
+        token_required:
+          type: boolean
+          description: 管理 API 是否启用了令牌保护
 
     Config:
       type: object

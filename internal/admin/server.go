@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"ipv6-proxy-pool/internal/config"
 	"ipv6-proxy-pool/internal/lease"
@@ -49,7 +50,7 @@ func Handler(pool Pool) http.Handler {
 
 // HandlerWithOptions returns the management API and optional web UI handler.
 func HandlerWithOptions(pool Pool, options Options) http.Handler {
-	server := &server{pool: pool, options: options}
+	server := &server{pool: pool, options: options, started: time.Now()}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", server.health)
 	mux.HandleFunc("GET /v1/status", server.status)
@@ -97,6 +98,7 @@ type server struct {
 	pool    Pool
 	options Options
 	mu      sync.Mutex
+	started time.Time
 }
 
 type createLeaseRequest struct {
@@ -115,22 +117,44 @@ func (s *server) health(w http.ResponseWriter, _ *http.Request) {
 func (s *server) status(w http.ResponseWriter, _ *http.Request) {
 	leases := s.pool.List()
 	persistent := 0
+	var totalRequests uint64
 	for _, item := range leases {
 		if item.Persistent {
 			persistent++
 		}
+		totalRequests += item.Requests
 	}
 	standby := s.pool.StandbyCount()
+
+	var listeners []listener.Info
+	if s.options.ListenerManager != nil {
+		listeners = s.options.ListenerManager.List()
+	} else {
+		listeners = []listener.Info{}
+	}
+
+	cfg := s.options.RuntimeConfig
 	writeJSON(w, http.StatusOK, map[string]any{
 		"status":               "ok",
+		"uptime_seconds":       int64(time.Since(s.started).Seconds()),
 		"lease_count":          len(leases),
 		"persistent_count":     persistent,
 		"standby_count":        standby,
-		"min_leases":           s.options.RuntimeConfig.MinLeases,
-		"max_leases":           s.options.RuntimeConfig.MaxLeases,
-		"ipv6_prefix":          s.options.RuntimeConfig.IPv6Prefix,
-		"socks_mode":           s.options.RuntimeConfig.SOCKS.Mode,
-		"socks_listen_address": s.options.RuntimeConfig.SOCKS.ListenAddress,
+		"total_requests":       totalRequests,
+		"listener_count":       len(listeners),
+		"listeners":            listeners,
+		"min_leases":           cfg.MinLeases,
+		"max_leases":           cfg.MaxLeases,
+		"ipv6_prefix":          cfg.IPv6Prefix,
+		"socks_mode":           cfg.SOCKS.Mode,
+		"socks_listen_address": cfg.SOCKS.ListenAddress,
+		"port_start":           cfg.SOCKS.PortStart,
+		"port_end":             cfg.SOCKS.PortEnd,
+		"always_on_ports":      cfg.SOCKS.AlwaysOnPorts,
+		"idle_timeout_seconds": int64(cfg.IdleTimeout.Seconds()),
+		"rotate_after_seconds": int64(cfg.RotateAfter.Seconds()),
+		"rotate_requests":      cfg.RotateRequests,
+		"token_required":       s.options.AdminToken != "",
 	})
 }
 

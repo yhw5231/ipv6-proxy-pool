@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"sort"
 	"sync"
 )
 
@@ -21,8 +22,8 @@ type Server interface {
 
 // Info describes a running listener.
 type Info struct {
-	LeaseID string
-	Address string
+	LeaseID string `json:"id"`
+	Address string `json:"address"`
 }
 
 type managedListener struct {
@@ -111,6 +112,18 @@ func (m *Manager) Get(leaseID string) (Info, bool) {
 		return Info{}, false
 	}
 	return Info{LeaseID: leaseID, Address: entry.listener.Addr().String()}, true
+}
+
+// List returns information about every active listener, sorted by address.
+func (m *Manager) List() []Info {
+	m.mu.RLock()
+	infos := make([]Info, 0, len(m.listeners))
+	for leaseID, entry := range m.listeners {
+		infos = append(infos, Info{LeaseID: leaseID, Address: entry.listener.Addr().String()})
+	}
+	m.mu.RUnlock()
+	sort.Slice(infos, func(i, j int) bool { return infos[i].Address < infos[j].Address })
+	return infos
 }
 
 // Stop closes and waits for the listener associated with leaseID.

@@ -105,28 +105,51 @@
 ```json
 {
   "status": "ok",
+  "uptime_seconds": 86400,
   "lease_count": 12,
   "persistent_count": 3,
   "standby_count": 1024,
+  "total_requests": 45678,
+  "listener_count": 12,
+  "listeners": [
+    { "id": "port-20000", "address": "[::]:20000" }
+  ],
   "min_leases": 1024,
   "max_leases": 2048,
   "ipv6_prefix": "2001:470:xxxx:yyyy::/64",
   "socks_mode": "per_ipv6",
-  "socks_listen_address": "[::]:1080"
+  "socks_listen_address": "[::]:1080",
+  "port_start": 20000,
+  "port_end": 22047,
+  "always_on_ports": [20000, 20001],
+  "idle_timeout_seconds": 3600,
+  "rotate_after_seconds": 0,
+  "rotate_requests": 0,
+  "token_required": true
 }
 ```
 
 | 字段 | 类型 | 说明 |
 |---|---|---|
 | `status` | string | 固定 `"ok"` |
-| `lease_count` | int | 当前**客户端**租约数（不含备用） |
+| `uptime_seconds` | int | 服务已运行秒数 |
+| `lease_count` | int | 当前**客户端**租约数（不含备用；含 `always_on_ports` 持久租约） |
 | `persistent_count` | int | 持久租约数（含 `always_on_ports`） |
 | `standby_count` | int | 常驻备用租约数（当前待分配数量） |
+| `total_requests` | uint64 | 全部租约累计成功转发的请求数 |
+| `listener_count` | int | per_ipv6 模式当前活跃的动态监听器数量（multiplex 恒为 `0`） |
+| `listeners` | array | 活跃监听器列表，元素为 `{ "id": 租约ID, "address": 监听地址 }` |
 | `min_leases` | int | 配置的常驻保底数量 |
 | `max_leases` | int | 租约总量上限（备用 + 客户端） |
 | `ipv6_prefix` | string | 配置的 IPv6 前缀 |
 | `socks_mode` | string | `multiplex` 或 `per_ipv6` |
 | `socks_listen_address` | string | SOCKS5 基础监听地址 |
+| `port_start` / `port_end` | int | 动态端口范围 |
+| `always_on_ports` | int[] | 配置的常开端口 |
+| `idle_timeout_seconds` | int | 空闲回收超时（秒，来自配置的纳秒换算） |
+| `rotate_after_seconds` | int | 按时间轮换间隔（秒，`0` 表示关闭） |
+| `rotate_requests` | uint64 | 按请求数轮换阈值（`0` 表示关闭） |
+| `token_required` | bool | 管理 API 是否启用了令牌保护 |
 
 ### 2.3 Config（配置，`GET/PUT /v1/config`）
 

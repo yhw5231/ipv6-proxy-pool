@@ -2,14 +2,34 @@ package admin
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"testing"
 
 	"ipv6-proxy-pool/internal/config"
 	"ipv6-proxy-pool/internal/lease"
+	"ipv6-proxy-pool/internal/listener"
 )
+
+// stubServeFunc satisfies the SOCKS5 server interface without serving traffic.
+// Serve blocks until the listener or context closes, mirroring real servers.
+type stubServeFunc struct{}
+
+func (stubServeFunc) Serve(ctx context.Context, ln net.Listener, _ string) error {
+	done := make(chan struct{})
+	go func() {
+		<-ctx.Done()
+		_ = ln.Close()
+		close(done)
+	}()
+	_, _ = ln.Accept()
+	<-done
+	return nil
+}
 
 func newTestHandler(t *testing.T, maxLeases int) http.Handler {
 	t.Helper()
@@ -257,6 +277,125 @@ func TestStatusReportsResidentFloor(t *testing.T) {
 	}
 	if payload.LeaseCount != 0 {
 		t.Fatalf("client lease count = %d, want 0 (standbys excluded)", payload.LeaseCount)
+	}
+}
+
+func TestStatusReportsRuntimeMetrics(t *testing.T) {
+	pool, err := lease.NewPool(lease.Options{
+		Prefix:    "2001:db8::/64",
+		MinLeases: 1,
+		MaxLeases: 4,
+	})
+	if err != nil {
+		t.Fatalf("NewPool: %v", err)
+	}
+	if _, err := pool.Acquire("client-a", false); err != nil {
+		t.Fatalf("Acquire: %v", err)
+	}
+	for i := 0; i < 3; i++ {
+		if _, err := pool.RecordRequest("client-a"); err != nil {
+			t.Fatalf("RecordRequest: %v", err)
+		}
+	}
+	handler := HandlerWithOptions(pool, Options{
+		RuntimeConfig: config.Config{
+			MinLeases: 1,
+			MaxLeases: 4,
+			SOCKS:     config.SOCKSConfig{Mode: config.ModePerIPv6, AlwaysOnPorts: []int{20000}},
+		},
+	})
+
+	status := httptest.NewRequest(http.MethodGet, "/v1/status", nil)
+	statusResult := httptest.NewRecorder()
+	handler.ServeHTTP(statusResult, status)
+	if statusResult.Code != http.StatusOK {
+		t.Fatalf("status code = %d", statusResult.Code)
+	}
+	var payload struct {
+		UptimeSeconds  int64      `json:"uptime_seconds"`
+		LeaseCount     int        `json:"lease_count"`
+		StandbyCount   int        `json:"standby_count"`
+		TotalRequests  uint64     `json:"total_requests"`
+		ListenerCount  int        `json:"listener_count"`
+		Listeners      []struct{} `json:"listeners"`
+		AlwaysOnPorts  []int      `json:"always_on_ports"`
+		RotateRequests uint64     `json:"rotate_requests"`
+		TokenRequired  bool       `json:"token_required"`
+	}
+	if err := json.NewDecoder(statusResult.Body).Decode(&payload); err != nil {
+		t.Fatalf("decode status: %v", err)
+	}
+	if payload.UptimeSeconds < 0 {
+		t.Fatalf("uptime_seconds = %d, want >= 0", payload.UptimeSeconds)
+	}
+	if payload.LeaseCount != 1 {
+		t.Fatalf("lease_count = %d, want 1", payload.LeaseCount)
+	}
+	if payload.StandbyCount != 0 {
+		t.Fatalf("standby_count = %d, want 0 (the seeded standby was claimed)", payload.StandbyCount)
+	}
+	if payload.TotalRequests != 3 {
+		t.Fatalf("total_requests = %d, want 3", payload.TotalRequests)
+	}
+	if payload.ListenerCount != 0 || len(payload.Listeners) != 0 {
+		t.Fatalf("listener info = %d/%d, want 0/0 without a listener manager", payload.ListenerCount, len(payload.Listeners))
+	}
+	if len(payload.AlwaysOnPorts) != 1 || payload.AlwaysOnPorts[0] != 20000 {
+		t.Fatalf("always_on_ports = %v, want [20000]", payload.AlwaysOnPorts)
+	}
+	if payload.TokenRequired {
+		t.Fatal("token_required = true, want false without an admin token")
+	}
+}
+
+func TestStatusReportsActiveListeners(t *testing.T) {
+	pool, err := lease.NewPool(lease.Options{
+		Prefix:    "2001:db8::/64",
+		MinLeases: 1,
+		MaxLeases: 4,
+		PortStart: 20000,
+		PortEnd:   20003,
+	})
+	if err != nil {
+		t.Fatalf("NewPool: %v", err)
+	}
+	manager := listener.NewManager(context.Background(), stubServeFunc{})
+	t.Cleanup(func() { _ = manager.Close() })
+
+	handler := HandlerWithOptions(pool, Options{
+		RuntimeConfig:   config.Config{MinLeases: 1, MaxLeases: 4, SOCKS: config.SOCKSConfig{Mode: config.ModePerIPv6}},
+		ListenerManager: manager,
+	})
+
+	leaseEntry, err := pool.Acquire("client-a", false)
+	if err != nil {
+		t.Fatalf("Acquire: %v", err)
+	}
+	if _, err := manager.Start("client-a", net.JoinHostPort("127.0.0.1", strconv.Itoa(leaseEntry.Port))); err != nil {
+		t.Fatalf("Start listener: %v", err)
+	}
+
+	status := httptest.NewRequest(http.MethodGet, "/v1/status", nil)
+	statusResult := httptest.NewRecorder()
+	handler.ServeHTTP(statusResult, status)
+	if statusResult.Code != http.StatusOK {
+		t.Fatalf("status code = %d", statusResult.Code)
+	}
+	var payload struct {
+		ListenerCount int `json:"listener_count"`
+		Listeners     []struct {
+			ID      string `json:"id"`
+			Address string `json:"address"`
+		} `json:"listeners"`
+	}
+	if err := json.NewDecoder(statusResult.Body).Decode(&payload); err != nil {
+		t.Fatalf("decode status: %v", err)
+	}
+	if payload.ListenerCount != 1 || len(payload.Listeners) != 1 {
+		t.Fatalf("listener payload = %+v, want exactly one active listener", payload)
+	}
+	if payload.Listeners[0].ID != "client-a" || payload.Listeners[0].Address == "" {
+		t.Fatalf("listener entry = %+v, want id client-a with an address", payload.Listeners[0])
 	}
 }
 
