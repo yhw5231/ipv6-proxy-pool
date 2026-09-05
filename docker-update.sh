@@ -67,6 +67,9 @@ if [ "$SKIP_PULL" -eq 0 ]; then
       echo "  - 或改用: git reset --hard origin/${BRANCH}（会丢弃所有本地修改）"
       exit 1
     fi
+    # git pull 若更新了本脚本自身，当前进程仍按旧内容执行，新增的前置检查
+    # 不会生效。这里以 --skip-pull 重新执行一次，确保运行的是最新脚本。
+    exec bash "${SCRIPT_DIR}/docker-update.sh" --skip-pull
   else
     warn "目录不是 Git 仓库，跳过拉取，直接使用当前代码构建。"
   fi
