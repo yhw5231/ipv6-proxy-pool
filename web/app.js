@@ -384,6 +384,9 @@
       cell(tr, formatNumber(row.leaseInfo?.requests ?? (row.multiplex ? state.status?.total_requests : 0)));
       const actions = tr.insertCell();
       if (row.port && row.leaseInfo) {
+        actions.appendChild(actionButton('测试', 'secondary-button', '网络可用性测试：经代理出网并比对出口 IPv6', () => {
+          testProxy(row.leaseInfo.id);
+        }));
         actions.appendChild(actionButton('复制地址', 'secondary-button', '复制该端口的 SOCKS5 连接地址', () => {
           copyText(`${socksHostValue(cfg)}:${row.port}`);
         }));
@@ -517,6 +520,11 @@
 
       const actions = row.insertCell();
       actions.className = 'actions-cell';
+      if (item.role !== 'standby') {
+        actions.appendChild(actionButton('测试', 'secondary-button', '网络可用性测试：经代理出网并比对出口 IPv6', () => {
+          testProxy(item.id);
+        }));
+      }
       if (item.port) {
         actions.appendChild(actionButton('复制', 'secondary-button', `复制 SOCKS5 地址 ${socksHostValue(cfg)}:${item.port}`, () => {
           copyText(`${socksHostValue(cfg)}:${item.port}`);
@@ -650,13 +658,34 @@
     await copyText(lines.join('\n'));
   }
 
+  // 对某个租约发起网络可用性测试：经代理出网并比对出口 IPv6 与租约地址。
+  async function testProxy(id, port) {
+    try {
+      const result = await request('/v1/proxies:test', {
+        method: 'POST',
+        body: JSON.stringify(port ? { port } : { id }),
+      });
+      if (!result.ok) {
+        notify(`代理测试失败：${result.error}`, 'error');
+        return;
+      }
+      const parts = [`延迟 ${result.latency_ms}ms`];
+      if (result.exit_ipv6) {
+        parts.push(`出口 ${result.exit_ipv6}`);
+        parts.push(result.ipv6_match ? '与租约地址一致' : `与租约地址不一致（期望 ${result.expected_ipv6}）`);
+      }
+      notify(`代理可用：${parts.join('，')}`, result.ipv6_match === false ? 'error' : '');
+    } catch (error) { notify(error.message, 'error'); }
+  }
+
   // ---------- 配置 ----------
 
   function putValue(id, value) { const element = $(id); if (element) element.value = value ?? ''; }
   function getValue(id) { return $(id)?.value ?? ''; }
 
-  function renderConfig() {
-    const cfg = state.config;
+  function renderConfig() { renderConfigFrom(state.config); }
+
+  function renderConfigFrom(cfg) {
     if (!cfg) return;
     putValue('ipv6Prefix', cfg.ipv6_prefix);
     putValue('minLeases', cfg.min_leases);
@@ -671,7 +700,8 @@
     putValue('adminListenAddress', cfg.admin.listen_address);
     // 出于安全考虑不回显令牌；留空提交表示保持现有令牌不变。
     putValue('adminToken', '');
-    putValue('webuiUsername', cfg.admin?.webui?.username || 'admin');
+    // 用户名同样不回显默认值；留空提交表示保持现有用户名不变。
+    putValue('webuiUsername', cfg.admin?.webui?.username || '');
     // 密码同样不回显；留空提交表示保持现有密码不变。
     putValue('webuiPassword', '');
     const mode = document.querySelector(`input[name="mode"][value="${cfg.socks.mode}"]`);
@@ -847,6 +877,29 @@
     $('restartBanner').hidden = true;
     $('saveMessage').textContent = '';
     renderConfig();
+  });
+
+  $('restoreDefaultsButton')?.addEventListener('click', async () => {
+    try {
+      const defaults = await request('/v1/config/defaults');
+      renderConfigFrom(defaults);
+      setConfigDirty(true);
+      $('restartBanner').hidden = true;
+      $('saveMessage').textContent = '已填入默认配置，确认后保存生效。';
+      notify('已恢复默认配置，请确认后保存。');
+    } catch (error) { notify(error.message, 'error'); }
+  });
+
+  $('tokenGenerateButton')?.addEventListener('click', () => {
+    const bytes = new Uint8Array(24);
+    crypto.getRandomValues(bytes);
+    const token = Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('');
+    putValue('adminToken', token);
+    setConfigDirty(true);
+    const input = $('adminToken');
+    input.focus();
+    input.select();
+    notify('已生成随机管理令牌，请立即复制保存——页面不会再次显示。');
   });
 
   $('configForm')?.addEventListener('submit', async (event) => {

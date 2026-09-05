@@ -196,6 +196,53 @@ func TestSaveAtomicFallsBackToInPlaceOnEBUSY(t *testing.T) {
 	}
 }
 
+func TestLoadMissingWebUIStaysUnset(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+	if err := os.WriteFile(path, []byte(`{
+		"ipv6_prefix": "2001:db8::/64",
+		"min_leases": 2,
+		"max_leases": 32,
+		"socks": {"mode": "multiplex", "listen_address": "[::]:10080", "port_start": 20000, "port_end": 21023},
+		"admin": {"listen_address": "[::]:10070"}
+	}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.Admin.WebUI != nil {
+		t.Fatalf("file without webui section must stay unset, got %+v", *cfg.Admin.WebUI)
+	}
+}
+
+func TestLoadKeepsExplicitWebUI(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+	if err := os.WriteFile(path, []byte(`{
+		"ipv6_prefix": "2001:db8::/64",
+		"min_leases": 2,
+		"max_leases": 32,
+		"socks": {"mode": "multiplex", "listen_address": "[::]:10080", "port_start": 20000, "port_end": 21023},
+		"admin": {
+			"listen_address": "[::]:10070",
+			"webui": {"username": "ops", "password": "s3cret"}
+		}
+	}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.Admin.WebUI == nil || cfg.Admin.WebUI.Username != "ops" || cfg.Admin.WebUI.Password != "s3cret" {
+		t.Fatalf("explicit webui section was lost, got %+v", cfg.Admin.WebUI)
+	}
+}
+
 func TestSaveAtomicEBUSYLeavesNoTemporaryFiles(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.json")

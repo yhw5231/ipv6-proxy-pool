@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -624,7 +625,7 @@ func TestConfiguredWebUICredentialsOverrideDefaults(t *testing.T) {
 	handler := HandlerWithOptions(pool, Options{
 		RuntimeConfig: config.Config{
 			Admin: config.AdminConfig{
-				WebUI: config.WebUIConfig{Username: "ops", Password: "s3cret"},
+				WebUI: &config.WebUIConfig{Username: "ops", Password: "s3cret"},
 			},
 		},
 	})
@@ -637,5 +638,125 @@ func TestConfiguredWebUICredentialsOverrideDefaults(t *testing.T) {
 	customLogin := loginAsConsole(handler, "ops", "s3cret")
 	if customLogin.Code != http.StatusOK {
 		t.Fatalf("custom credentials status = %d, body = %s", customLogin.Code, customLogin.Body.String())
+	}
+}
+
+func TestSaveConfigKeepsDefaultsForOmittedFields(t *testing.T) {
+	pool, err := lease.NewPool(lease.Options{
+		Prefix:    "2001:db8::/64",
+		MaxLeases: 4,
+	})
+	if err != nil {
+		t.Fatalf("NewPool: %v", err)
+	}
+	path := filepath.Join(t.TempDir(), "config.json")
+	handler := HandlerWithOptions(pool, Options{
+		RuntimeConfig: config.Config{MinLeases: 1, MaxLeases: 4},
+		ConfigPath:    path,
+	})
+
+	// 仅提交 ipv6_prefix，其他字段必须回落到内置默认值而不是被清零。
+	save := httptest.NewRequest(http.MethodPut, "/v1/config", strings.NewReader(`{"ipv6_prefix": "2001:db8:1::/64"}`))
+	save.Header.Set("Content-Type", "application/json")
+	saveResult := httptest.NewRecorder()
+	handler.ServeHTTP(saveResult, save)
+	if saveResult.Code != http.StatusOK {
+		t.Fatalf("save status = %d, body = %s", saveResult.Code, saveResult.Body.String())
+	}
+
+	saved, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load saved config: %v", err)
+	}
+	expected := config.Default()
+	if saved.IPv6Prefix != "2001:db8:1::/64" {
+		t.Fatalf("saved ipv6_prefix = %q, want the submitted prefix", saved.IPv6Prefix)
+	}
+	if saved.MinLeases != expected.MinLeases {
+		t.Fatalf("omitted min_leases = %d, want default %d", saved.MinLeases, expected.MinLeases)
+	}
+	if saved.MaxLeases != expected.MaxLeases {
+		t.Fatalf("omitted max_leases = %d, want default %d", saved.MaxLeases, expected.MaxLeases)
+	}
+	if saved.SOCKS.PortStart != expected.SOCKS.PortStart {
+		t.Fatalf("omitted socks.port_start = %d, want default %d", saved.SOCKS.PortStart, expected.SOCKS.PortStart)
+	}
+}
+
+func TestSaveConfigOmittedWebUIStaysUnset(t *testing.T) {
+	pool, err := lease.NewPool(lease.Options{
+		Prefix:    "2001:db8::/64",
+		MaxLeases: 32,
+	})
+	if err != nil {
+		t.Fatalf("NewPool: %v", err)
+	}
+	path := filepath.Join(t.TempDir(), "config.json")
+	handler := HandlerWithOptions(pool, Options{
+		RuntimeConfig: config.Config{MinLeases: 2, MaxLeases: 32},
+		ConfigPath:    path,
+	})
+
+	// 请求体没有 webui 段：不能把默认 admin/admin 固化进配置文件。
+	save := httptest.NewRequest(http.MethodPut, "/v1/config", strings.NewReader(`{
+		"ipv6_prefix": "2001:db8::/64",
+		"min_leases": 2,
+		"max_leases": 32,
+		"socks": {"mode": "multiplex", "listen_address": "[::]:10080", "port_start": 20000, "port_end": 21023},
+		"admin": {"listen_address": "[::]:10070"}
+	}`))
+	save.Header.Set("Content-Type", "application/json")
+	saveResult := httptest.NewRecorder()
+	handler.ServeHTTP(saveResult, save)
+	if saveResult.Code != http.StatusOK {
+		t.Fatalf("save status = %d, body = %s", saveResult.Code, saveResult.Body.String())
+	}
+
+	saved, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load saved config: %v", err)
+	}
+	if saved.Admin.WebUI != nil {
+		t.Fatalf("omitted webui section was persisted, got %+v", *saved.Admin.WebUI)
+	}
+}
+
+func TestSaveConfigPersistsExplicitWebUI(t *testing.T) {
+	pool, err := lease.NewPool(lease.Options{
+		Prefix:    "2001:db8::/64",
+		MaxLeases: 32,
+	})
+	if err != nil {
+		t.Fatalf("NewPool: %v", err)
+	}
+	path := filepath.Join(t.TempDir(), "config.json")
+	handler := HandlerWithOptions(pool, Options{
+		RuntimeConfig: config.Config{MinLeases: 2, MaxLeases: 32},
+		ConfigPath:    path,
+	})
+
+	save := httptest.NewRequest(http.MethodPut, "/v1/config", strings.NewReader(`{
+		"ipv6_prefix": "2001:db8::/64",
+		"min_leases": 2,
+		"max_leases": 32,
+		"socks": {"mode": "multiplex", "listen_address": "[::]:10080", "port_start": 20000, "port_end": 21023},
+		"admin": {
+			"listen_address": "[::]:10070",
+			"webui": {"username": "ops", "password": "s3cret"}
+		}
+	}`))
+	save.Header.Set("Content-Type", "application/json")
+	saveResult := httptest.NewRecorder()
+	handler.ServeHTTP(saveResult, save)
+	if saveResult.Code != http.StatusOK {
+		t.Fatalf("save status = %d, body = %s", saveResult.Code, saveResult.Body.String())
+	}
+
+	saved, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load saved config: %v", err)
+	}
+	if saved.Admin.WebUI == nil || saved.Admin.WebUI.Username != "ops" || saved.Admin.WebUI.Password != "s3cret" {
+		t.Fatalf("explicit webui section was lost, got %+v", saved.Admin.WebUI)
 	}
 }

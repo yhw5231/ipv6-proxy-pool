@@ -594,6 +594,69 @@ func (p *Pool) rotateLocked(current *entry, now time.Time) error {
 	return nil
 }
 
+// Reassign switches every lease (clients, standbys and always-on ports) to an
+// address derived from the new prefix. IDs, ports, persistence and roles stay
+// unchanged, so listeners bound to host:port keep working and the whole pool
+// moves to the new prefix without a restart. Allocation is planned against a
+// local copy first, so an invalid or too-small prefix leaves the pool
+// untouched.
+func (p *Pool) Reassign(prefix string) error {
+	generator, err := ipv6addr.NewGenerator(prefix)
+	if err != nil {
+		return err
+	}
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	// Plan the new addresses first. The current addresses stay reserved so a
+	// new prefix overlapping the old one (shared base, larger mask) cannot
+	// hand out an address that is still in use.
+	allocated := make(map[string]struct{}, len(p.leases))
+	for _, current := range p.leases {
+		allocated[current.IPv6] = struct{}{}
+	}
+	plan := make(map[string]string, len(p.leases))
+	next := uint64(0)
+	for _, current := range p.leases {
+		var candidate net.IP
+		for attempts := 0; ; attempts++ {
+			if attempts > p.options.MaxLeases {
+				return ErrCapacity
+			}
+			next++
+			candidate, err = generator.FromIndex(next)
+			if err != nil {
+				return err
+			}
+			key := candidate.String()
+			if _, taken := allocated[key]; taken {
+				continue
+			}
+			allocated[key] = struct{}{}
+			break
+		}
+		plan[current.ID] = candidate.String()
+	}
+
+	p.generator = generator
+	p.options.Prefix = prefix
+	p.nextIndex = next
+	now := p.options.Now()
+	for id, address := range plan {
+		current := p.leases[id]
+		current.IPv6 = address
+		current.generation++
+		if current.Role == RoleClient {
+			current.CreatedAt = now
+			current.LastUsedAt = now
+			current.Requests = 0
+		}
+	}
+	p.ensureStandbysLocked(now)
+	return nil
+}
+
 func (p *Pool) releaseLocked(id string) bool {
 	current, ok := p.leases[id]
 	if !ok {

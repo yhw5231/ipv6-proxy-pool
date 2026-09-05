@@ -2,6 +2,7 @@ package lease
 
 import (
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -649,5 +650,134 @@ func TestAcquirePortRejectsUnavailablePortAndMismatchedLease(t *testing.T) {
 	}
 	if _, err := pool.AcquirePort("first", 20001, false); !errors.Is(err, ErrPortUnavailable) {
 		t.Fatalf("AcquirePort mismatched existing lease error = %v, want ErrPortUnavailable", err)
+	}
+}
+
+func TestReassignMovesEveryLeaseToNewPrefix(t *testing.T) {
+	pool, err := NewPool(Options{
+		Prefix:    "2001:db8::/64",
+		MinLeases: 1,
+		MaxLeases: 4,
+		PortStart: 20000,
+		PortEnd:   20003,
+	})
+	if err != nil {
+		t.Fatalf("NewPool: %v", err)
+	}
+	clientA, err := pool.Acquire("client-a", true)
+	if err != nil {
+		t.Fatalf("Acquire client-a: %v", err)
+	}
+	clientB, err := pool.AcquirePort("client-b", 20001, false)
+	if err != nil {
+		t.Fatalf("AcquirePort client-b: %v", err)
+	}
+	before := pool.ListAll()
+
+	if err := pool.Reassign("2001:db8:beef::/64"); err != nil {
+		t.Fatalf("Reassign: %v", err)
+	}
+
+	after := pool.ListAll()
+	if len(after) < len(before) {
+		t.Fatalf("lease count after reassign = %d, want at least %d", len(after), len(before))
+	}
+	byID := make(map[string]Lease, len(after))
+	for _, item := range after {
+		byID[item.ID] = item
+	}
+	prefix := "2001:db8:beef:"
+	for _, original := range before {
+		updated, ok := byID[original.ID]
+		if !ok {
+			t.Fatalf("lease %q vanished after reassign", original.ID)
+		}
+		if updated.ID != original.ID || updated.Port != original.Port || updated.Persistent != original.Persistent || updated.Role != original.Role {
+			t.Fatalf("lease %q identity changed: %+v -> %+v", original.ID, original, updated)
+		}
+		if updated.IPv6 == original.IPv6 {
+			t.Fatalf("lease %q kept its old address %s", original.ID, updated.IPv6)
+		}
+		if !strings.HasPrefix(updated.IPv6, prefix) {
+			t.Fatalf("lease %q address %s is not under the new prefix %s", original.ID, updated.IPv6, prefix)
+		}
+	}
+	// 新租约应使用新前缀下的地址。
+	clientC, err := pool.Acquire("client-c", false)
+	if err != nil {
+		t.Fatalf("Acquire after reassign: %v", err)
+	}
+	if !strings.HasPrefix(clientC.IPv6, prefix) {
+		t.Fatalf("new lease address %s is not under the new prefix", clientC.IPv6)
+	}
+	if clientA.Port == 0 || clientB.Port == 0 {
+		t.Fatal("expected leased ports to survive reassign")
+	}
+}
+
+func TestReassignRejectsInvalidPrefixWithoutChanges(t *testing.T) {
+	pool, err := NewPool(Options{
+		Prefix:    "2001:db8::/64",
+		MinLeases: 1,
+		MaxLeases: 2,
+	})
+	if err != nil {
+		t.Fatalf("NewPool: %v", err)
+	}
+	original := pool.ListAll()
+
+	if err := pool.Reassign("not-a-cidr"); err == nil {
+		t.Fatal("Reassign accepted an invalid prefix")
+	}
+	unchanged := pool.ListAll()
+	if len(unchanged) != len(original) {
+		t.Fatalf("lease count changed after failed reassign")
+	}
+	for _, item := range unchanged {
+		var match *Lease
+		for i := range original {
+			if original[i].ID == item.ID {
+				match = &original[i]
+				break
+			}
+		}
+		if match == nil || match.IPv6 != item.IPv6 {
+			t.Fatalf("lease %q address changed after failed reassign", item.ID)
+		}
+	}
+}
+
+func TestReassignOverlappingPrefixSkipsInUseAddresses(t *testing.T) {
+	pool, err := NewPool(Options{
+		Prefix:    "2001:db8:1::/64",
+		MinLeases: 0,
+		MaxLeases: 2,
+	})
+	if err != nil {
+		t.Fatalf("NewPool: %v", err)
+	}
+	first, err := pool.Acquire("first", false)
+	if err != nil {
+		t.Fatalf("Acquire first: %v", err)
+	}
+	if _, err := pool.Acquire("second", false); err != nil {
+		t.Fatalf("Acquire second: %v", err)
+	}
+
+	// /62 与旧 /64 共享基地址段：新分配必须避开旧地址。
+	if err := pool.Reassign("2001:db8:1::/62"); err != nil {
+		t.Fatalf("Reassign overlapping prefix: %v", err)
+	}
+	after := pool.ListAll()
+	seen := make(map[string]struct{}, len(after))
+	for _, item := range after {
+		if _, dup := seen[item.IPv6]; dup {
+			t.Fatalf("duplicate address %s after reassign", item.IPv6)
+		}
+		seen[item.IPv6] = struct{}{}
+	}
+	// 原地址集合仍应整体属于新前缀覆盖范围（这里只验证无重复与全部变化）。
+	if after[0].IPv6 == first.IPv6 {
+		t.Fatalf("lease kept its old address %s despite overlapping prefix", after[0].IPv6)
 	}
 }

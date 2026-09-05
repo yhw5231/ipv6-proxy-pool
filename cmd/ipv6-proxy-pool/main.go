@@ -108,6 +108,7 @@ func run(ctx context.Context, cfg config.Config, configPath string) error {
 			AdminToken:      cfg.Admin.Token,
 			Web:             os.DirFS("web"),
 			ListenerManager: listenerManager,
+			Probe:           socks5.ProbeProxy,
 		}),
 		ReadHeaderTimeout: 5 * time.Second,
 	}

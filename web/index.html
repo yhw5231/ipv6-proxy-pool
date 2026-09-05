@@ -307,18 +307,21 @@
             </label>
             <label class="field">
               <span>管理令牌（留空保持不变）</span>
-              <input id="adminToken" name="adminToken" type="text" autocomplete="off" placeholder="至少 8 位，客户端通过 Bearer 携带">
-              <small>启用后所有 /v1/* 请求都需要令牌；输入框留空不会清除已配置的令牌。</small>
+              <div class="input-row">
+                <input id="adminToken" name="adminToken" type="text" autocomplete="off" placeholder="至少 8 位，客户端通过 Bearer 携带">
+                <button id="tokenGenerateButton" type="button" class="secondary-button" title="生成随机管理令牌">随机生成</button>
+              </div>
+              <small>启用后所有 /v1/* 请求都需要令牌；输入框留空不会清除已配置的令牌。点击「随机生成」填入随机令牌，请立即复制保存——页面不会再次显示。</small>
             </label>
             <label class="field">
-              <span>Web 登录用户名</span>
-              <input id="webuiUsername" name="webuiUsername" type="text" autocomplete="off">
-              <small>控制台登录账号，默认 admin。</small>
+              <span>Web 登录用户名（留空保持不变）</span>
+              <input id="webuiUsername" name="webuiUsername" type="text" autocomplete="off" placeholder="从未设置过时登录默认用 admin">
+              <small>留空提交不会清除已配置的用户名；配置中从未设置过时，登录默认使用 admin。</small>
             </label>
             <label class="field">
               <span>Web 登录密码（留空保持不变）</span>
-              <input id="webuiPassword" name="webuiPassword" type="password" autocomplete="new-password">
-              <small>控制台登录密码，默认 admin；留空不会清除已配置的密码，修改保存并重启后生效。</small>
+              <input id="webuiPassword" name="webuiPassword" type="password" autocomplete="new-password" placeholder="从未设置过时登录默认用 admin">
+              <small>留空提交不会清除已配置的密码；配置中从未设置过时，登录默认使用 admin。修改保存并重启后生效。</small>
             </label>
           </div>
         </section>
@@ -327,6 +330,7 @@
           <span id="saveMessage" role="status" aria-live="polite"></span>
           <div class="header-actions">
             <button id="resetButton" type="button" class="secondary-button">撤销更改</button>
+            <button id="restoreDefaultsButton" type="button" class="secondary-button" title="将表单恢复为内置默认值，保存后生效">恢复默认</button>
             <button id="saveButton" type="submit" class="primary-button">保存配置</button>
           </div>
         </div>

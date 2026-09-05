@@ -47,9 +47,11 @@ type AdminConfig struct {
 	// request. It lets remote clients safely request and manage proxy leases.
 	Token string `json:"token,omitempty"`
 	// WebUI holds the credentials required before the web console shows the
-	// panel. Empty values fall back to WebUIDefaultUsername and
-	// WebUIDefaultPassword so every deployment starts with admin / admin.
-	WebUI WebUIConfig `json:"webui"`
+	// panel. A nil value (or one with blank fields) means "unset": the
+	// console shows blank credential fields and WebUICredentials falls back
+	// to WebUIDefaultUsername / WebUIDefaultPassword so every deployment
+	// starts out logging in with admin / admin.
+	WebUI *WebUIConfig `json:"webui,omitempty"`
 }
 
 type WebUIConfig struct {
@@ -63,15 +65,17 @@ const (
 )
 
 // WebUICredentials resolves the effective console login, substituting the
-// built-in admin / admin defaults for blank configuration values.
+// built-in admin / admin defaults for a section that was never configured.
 func (a AdminConfig) WebUICredentials() (string, string) {
-	username := strings.TrimSpace(a.WebUI.Username)
-	if username == "" {
-		username = WebUIDefaultUsername
-	}
-	password := a.WebUI.Password
-	if password == "" {
-		password = WebUIDefaultPassword
+	username := WebUIDefaultUsername
+	password := WebUIDefaultPassword
+	if a.WebUI != nil {
+		if trimmed := strings.TrimSpace(a.WebUI.Username); trimmed != "" {
+			username = trimmed
+		}
+		if a.WebUI.Password != "" {
+			password = a.WebUI.Password
+		}
 	}
 	return username, password
 }
@@ -92,7 +96,10 @@ func Default() Config {
 		},
 		Admin: AdminConfig{
 			ListenAddress: "127.0.0.1:10070",
-			WebUI:         WebUIConfig{Username: WebUIDefaultUsername, Password: WebUIDefaultPassword},
+			WebUI: &WebUIConfig{
+				Username: WebUIDefaultUsername,
+				Password: WebUIDefaultPassword,
+			},
 		},
 	}
 }
@@ -158,7 +165,7 @@ func (c Config) Validate() error {
 	if len(c.Admin.Token) > 0 && len(c.Admin.Token) < 8 {
 		return errors.New("admin.token must be at least 8 characters when set")
 	}
-	if len(c.Admin.WebUI.Password) > 0 && len(c.Admin.WebUI.Password) < 4 {
+	if c.Admin.WebUI != nil && len(c.Admin.WebUI.Password) > 0 && len(c.Admin.WebUI.Password) < 4 {
 		return errors.New("admin.webui.password must be at least 4 characters when set")
 	}
 	return nil
@@ -196,7 +203,36 @@ func Load(path string) (Config, error) {
 	if err := cfg.Validate(); err != nil {
 		return Config{}, err
 	}
+	// Default() seats admin/admin into WebUI so a config written from
+	// Default() logs in out of the box. A document that never declares the
+	// section (or declares it blank) must stay "unset": the console shows
+	// blank credential fields there (no autofill) and a blank save keeps
+	// them unchanged. The effective admin/admin login fallback stays in
+	// WebUICredentials.
+	if !WebUIExplicit(data) {
+		cfg.Admin.WebUI = nil
+	}
 	return cfg, nil
+}
+
+// WebUIExplicit reports whether the JSON document declares a webui section
+// with at least one non-blank credential. An absent section, "webui": null or
+// "webui": {} all mean "unset" and are not auto-filled with the built-in
+// admin/admin default.
+func WebUIExplicit(data []byte) bool {
+	var probe struct {
+		Admin *struct {
+			WebUI *struct {
+				Username string `json:"username"`
+				Password string `json:"password"`
+			} `json:"webui"`
+		} `json:"admin"`
+	}
+	if err := json.Unmarshal(data, &probe); err != nil {
+		return false
+	}
+	return probe.Admin != nil && probe.Admin.WebUI != nil &&
+		(strings.TrimSpace(probe.Admin.WebUI.Username) != "" || probe.Admin.WebUI.Password != "")
 }
 
 // renameFn is swapped by tests that need to simulate rename failures.

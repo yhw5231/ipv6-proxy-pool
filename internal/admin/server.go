@@ -1,10 +1,13 @@
 package admin
 
 import (
+	"bytes"
+	"context"
 	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"net"
 	"net/http"
@@ -35,7 +38,14 @@ type Pool interface {
 	Rotate(id string) (lease.Lease, error)
 	Recycle(id string) (lease.Lease, error)
 	SetPersistent(id string, persistent bool) (lease.Lease, error)
+	Reassign(prefix string) error
 }
+
+// ProbeFunc verifies a live proxy endpoint: proxyAddr is the SOCKS5 listener,
+// leaseID targets one specific lease (multiplex mode), and a non-empty
+// egressURL additionally checks public egress and returns the observed exit
+// IPv6 address. Tests inject a stub instead of dialing real networks.
+type ProbeFunc func(ctx context.Context, proxyAddr, egressURL, leaseID string) (exitIPv6 string, err error)
 
 // sessionTTL is how long a successful web console login stays valid. Sessions
 // live in memory only, so restarting the service signs every console out.
@@ -52,6 +62,9 @@ type Options struct {
 	AdminToken      string
 	Web             fs.FS
 	ListenerManager *listener.Manager
+	// Probe, when set, backs POST /v1/proxies:test. A nil value disables the
+	// endpoint so deployments that do not wire the probe get a clear error.
+	Probe ProbeFunc
 }
 
 // Handler preserves the original lease-only API constructor.
@@ -69,7 +82,9 @@ func HandlerWithOptions(pool Pool, options Options) http.Handler {
 	mux.HandleFunc("GET /v1/auth/session", server.sessionInfo)
 	mux.HandleFunc("GET /v1/status", server.status)
 	mux.HandleFunc("GET /v1/config", server.getConfig)
+	mux.HandleFunc("GET /v1/config/defaults", server.getConfigDefaults)
 	mux.HandleFunc("PUT /v1/config", server.saveConfig)
+	mux.HandleFunc("POST /v1/proxies:test", server.testProxy)
 	mux.HandleFunc("GET /v1/leases", server.listLeases)
 	mux.HandleFunc("POST /v1/leases", server.createLease)
 	mux.HandleFunc("GET /v1/leases/{id}", server.getLease)
@@ -187,20 +202,183 @@ func (s *server) saveConfig(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusServiceUnavailable, errors.New("configuration persistence is not enabled"))
 		return
 	}
-	var candidate config.Config
-	if err := decodeJSON(r, &candidate); err != nil {
+	// Decode onto the defaults so a partial payload keeps the built-in
+	// defaults for every omitted field instead of silently zeroing them
+	// (mirrors how Load applies Default() before overlaying the file).
+	data, err := io.ReadAll(http.MaxBytesReader(nil, r.Body, 1<<20))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("read config payload: %w", err))
+		return
+	}
+	candidate := config.Default()
+	if err := decodeJSONBytes(data, &candidate); err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
+	}
+	// A payload that never mentions webui must not turn the default
+	// admin/admin into persisted credentials: like Load, treat an absent
+	// webui section as "unset".
+	if !config.WebUIExplicit(data) {
+		candidate.Admin.WebUI = nil
+	}
+	// A new IPv6 prefix takes effect immediately: the whole pool moves to the
+	// new prefix without restarting (listeners bind host:port, never the lease
+	// address). Other setting changes still need a restart.
+	prefixChanged := candidate.IPv6Prefix != s.options.RuntimeConfig.IPv6Prefix
+	if prefixChanged {
+		if err := s.pool.Reassign(candidate.IPv6Prefix); err != nil {
+			writeError(w, http.StatusBadRequest, fmt.Errorf("reassign pool for new prefix: %w", err))
+			return
+		}
 	}
 	if err := config.SaveAtomic(s.options.ConfigPath, candidate); err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
+	s.options.RuntimeConfig.IPv6Prefix = candidate.IPv6Prefix
 	writeJSON(w, http.StatusOK, map[string]any{
-		"saved":            true,
-		"restart_required": true,
-		"config":           candidate,
+		"saved":             true,
+		"restart_required":  true,
+		"prefix_reassigned": prefixChanged,
+		"config":            candidate,
 	})
+}
+
+// getConfigDefaults returns the built-in defaults for the console's "restore
+// defaults" action. The webui section is deliberately left unset so the
+// restore keeps the blank-means-keep semantics instead of persisting
+// admin/admin.
+func (s *server) getConfigDefaults(w http.ResponseWriter, _ *http.Request) {
+	defaults := config.Default()
+	defaults.Admin.WebUI = nil
+	writeJSON(w, http.StatusOK, defaults)
+}
+
+// defaultEgressURL is the exit-address service used by proxy probes. It
+// returns the caller's public address as plain text and prefers IPv6.
+const defaultEgressURL = "http://api64.ipify.org"
+
+type testProxyRequest struct {
+	ID     string `json:"id"`
+	Port   int    `json:"port"`
+	Egress string `json:"egress"`
+}
+
+// probeTargetError carries an HTTP status for proxy target resolution
+// failures (unknown lease, unknown port, or a malformed request).
+type probeTargetError struct {
+	status int
+	err    error
+}
+
+func (e *probeTargetError) Error() string { return e.err.Error() }
+func (e *probeTargetError) Unwrap() error { return e.err }
+
+// testProxy runs a live network probe against one proxy lease: it dials the
+// lease's SOCKS5 listener and completes the handshake (multiplex mode
+// identifies as "lease:<id>" so no throwaway lease is minted), then verifies
+// public egress through the proxy and reports whether the observed exit IPv6
+// matches the lease address.
+func (s *server) testProxy(w http.ResponseWriter, r *http.Request) {
+	if s.options.Probe == nil {
+		writeError(w, http.StatusServiceUnavailable, errors.New("proxy probing is not enabled"))
+		return
+	}
+	var request testProxyRequest
+	if err := decodeJSON(r, &request); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	request.ID = strings.TrimSpace(request.ID)
+
+	proxyAddr, leaseID, expectedIPv6, err := s.resolveProbeTarget(request)
+	if err != nil {
+		var targetErr *probeTargetError
+		if errors.As(err, &targetErr) {
+			writeError(w, targetErr.status, targetErr.err)
+		} else {
+			writeError(w, http.StatusBadRequest, err)
+		}
+		return
+	}
+	egress := strings.TrimSpace(request.Egress)
+	if egress == "" {
+		egress = defaultEgressURL
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	defer cancel()
+	start := time.Now()
+	exitIPv6, err := s.options.Probe(ctx, proxyAddr, egress, leaseID)
+	latency := time.Since(start)
+	if err != nil {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"ok":         false,
+			"proxy":      proxyAddr,
+			"error":      err.Error(),
+			"latency_ms": latency.Milliseconds(),
+		})
+		return
+	}
+	matched := expectedIPv6 != "" && strings.EqualFold(expectedIPv6, exitIPv6)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":            true,
+		"proxy":         proxyAddr,
+		"latency_ms":    latency.Milliseconds(),
+		"exit_ipv6":     exitIPv6,
+		"expected_ipv6": expectedIPv6,
+		"ipv6_match":    matched,
+	})
+}
+
+// resolveProbeTarget maps a request {id, port} to the listener address to
+// dial. per_ipv6 leases use their own listener; multiplex mode shares the
+// SOCKS listen address. Listen hosts are normalized to loopback because a
+// probe dials, it does not bind.
+func (s *server) resolveProbeTarget(request testProxyRequest) (proxyAddr, leaseID, expectedIPv6 string, err error) {
+	socksListen := s.options.RuntimeConfig.SOCKS.ListenAddress
+	if request.ID != "" {
+		entry, ok := s.pool.Get(request.ID)
+		if !ok {
+			return "", "", "", &probeTargetError{http.StatusNotFound, fmt.Errorf("lease %q not found", request.ID)}
+		}
+		if s.options.ListenerManager != nil {
+			if info, ok := s.options.ListenerManager.Get(request.ID); ok {
+				return normalizeProbeAddress(info.Address), request.ID, entry.IPv6, nil
+			}
+		}
+		if entry.Port != 0 {
+			return net.JoinHostPort("127.0.0.1", strconv.Itoa(entry.Port)), request.ID, entry.IPv6, nil
+		}
+		return normalizeProbeAddress(socksListen), request.ID, entry.IPv6, nil
+	}
+	if request.Port != 0 {
+		host := "127.0.0.1"
+		if h, _, splitErr := net.SplitHostPort(socksListen); splitErr == nil && h != "::" && h != "0.0.0.0" && h != "" {
+			host = h
+		}
+		for _, item := range s.pool.ListAll() {
+			if item.Port == request.Port {
+				return net.JoinHostPort(host, strconv.Itoa(request.Port)), item.ID, item.IPv6, nil
+			}
+		}
+		return "", "", "", &probeTargetError{http.StatusNotFound, fmt.Errorf("lease on port %d not found", request.Port)}
+	}
+	return "", "", "", errors.New("id or port must be provided")
+}
+
+// normalizeProbeAddress replaces wildcard and empty listen hosts with the
+// loopback address so the probe can actually dial the listener.
+func normalizeProbeAddress(address string) string {
+	host, port, err := net.SplitHostPort(address)
+	if err != nil {
+		return address
+	}
+	switch host {
+	case "", "::", "0.0.0.0":
+		host = "127.0.0.1"
+	}
+	return net.JoinHostPort(host, port)
 }
 
 func (s *server) listLeases(w http.ResponseWriter, r *http.Request) {
@@ -383,7 +561,15 @@ func (s *server) recycleLease(w http.ResponseWriter, r *http.Request) {
 }
 
 func decodeJSON(r *http.Request, destination any) error {
-	decoder := json.NewDecoder(http.MaxBytesReader(nil, r.Body, 1<<20))
+	data, err := io.ReadAll(http.MaxBytesReader(nil, r.Body, 1<<20))
+	if err != nil {
+		return err
+	}
+	return decodeJSONBytes(data, destination)
+}
+
+func decodeJSONBytes(data []byte, destination any) error {
+	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(destination); err != nil {
 		return err
