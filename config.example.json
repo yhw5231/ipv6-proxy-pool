@@ -7,7 +7,7 @@
     "rotate_requests":  0,
     "socks":  {
                   "mode":  "per_ipv6",
-                  "listen_address":  "[::]:1080",
+                  "listen_address":  "[::]:10080",
                   "port_start":  20000,
                   "port_end":  22047,
                   "always_on_ports":  [
@@ -17,7 +17,7 @@
                                       ]
               },
     "admin":  {
-                  "listen_address":  "[::]:8080",
+                  "listen_address":  "[::]:10070",
                   "token":  ""
               }
 }

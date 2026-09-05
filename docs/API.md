@@ -10,7 +10,7 @@
 
 ### 1.1 基础地址
 
-管理服务监听地址由配置文件 `admin.listen_address` 决定，默认 `[::]:8080`：
+管理服务监听地址由配置文件 `admin.listen_address` 决定，默认 `[::]:10070`：
 
 ```
 服务基地址 = http://<服务器IP>:<admin端口>
@@ -118,7 +118,7 @@
   "max_leases": 2048,
   "ipv6_prefix": "2001:470:xxxx:yyyy::/64",
   "socks_mode": "per_ipv6",
-  "socks_listen_address": "[::]:1080",
+  "socks_listen_address": "[::]:10080",
   "port_start": 20000,
   "port_end": 22047,
   "always_on_ports": [20000, 20001],
@@ -165,13 +165,13 @@
   "rotate_requests": 0,
   "socks": {
     "mode": "per_ipv6",
-    "listen_address": "[::]:1080",
+    "listen_address": "[::]:10080",
     "port_start": 20000,
     "port_end": 22047,
     "always_on_ports": []
   },
   "admin": {
-    "listen_address": "[::]:8080",
+    "listen_address": "[::]:10070",
     "token": "可选，文档用途下不建议回传明文"
   }
 }
@@ -384,7 +384,7 @@
 ## 4. 完整调用示例（客户端程序）
 
 ```bash
-BASE=http://<服务器IP>:8080
+BASE=http://<服务器IP>:10070
 TOKEN=<管理令牌>
 
 # 1) 确认服务在线

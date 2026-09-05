@@ -46,7 +46,13 @@
 在目标 Linux 主机上（拥有 tunnelbroker.net 分配的 IPv6 /64 网段）：
 
 ```bash
-# 1. 上传本项目到主机，或直接在主机上克隆
+# 1. 从 Git 仓库拉取代码（推荐，便于后续在线更新）
+git clone https://github.com/yhw5231/ipv6-proxy-pool.git
+cd ipv6-proxy-pool
+
+# 也可以从其他机器上传已有目录（此时如需在线更新，建议补一条 remote）：
+#   git init && git remote add origin https://github.com/yhw5231/ipv6-proxy-pool.git
+
 # 2. 进入项目目录，运行安装菜单
 sudo bash control.sh
 ```
@@ -58,6 +64,7 @@ sudo bash control.sh
 ```bash
 sudo bash control.sh install        # 一键安装并启动（自动检测 /64、生成令牌、安装 systemd 服务）
 sudo bash control.sh start|stop|restart|status|logs|uninstall
+sudo bash control.sh update         # 在线更新：从仓库拉取最新代码、重建二进制并重启
 sudo bash control.sh client-new client-a        # 为客户端分配代理（返回端口和 IPv6）
 sudo bash control.sh client-rotate client-a     # 更换该客户端的 IPv6（端口不变）
 sudo bash control.sh client-recycle client-a    # 释放并立即重新获取（新端口 + 新 IPv6）
@@ -126,13 +133,13 @@ Copy-Item .\config.example.json .\config.json
   "rotate_requests": 0,
   "socks": {
     "mode": "per_ipv6",
-    "listen_address": "[::]:1080",
+    "listen_address": "[::]:10080",
     "port_start": 20000,
     "port_end": 22047,
     "always_on_ports": [20000, 20001, 20002]
   },
   "admin": {
-    "listen_address": "[::]:8080",
+    "listen_address": "[::]:10070",
     "token": "换成至少8位的随机令牌"
   }
 }
@@ -141,6 +148,8 @@ Copy-Item .\config.example.json .\config.json
 `2001:db8::/64` 是文档示例前缀，不能作为真实公网出口。部署时必须替换为真实分配并路由到宿主机的 IPv6 前缀。`per_ipv6` 模式要求端口范围大小不小于 `max_leases`（示例 20000–22047 共 2048 个端口）。
 
 > **从旧版本升级**：旧配置没有 `min_leases` 字段，加载时会取默认值 1024。若原 `max_leases` 小于 1024，启动会报错 `min_leases must not exceed max_leases`——请把配置中的 `max_leases` 调大（例如 2048），或显式把 `min_leases` 设为 `0`（关闭常驻保底，回到旧的纯弹性模型）。
+>
+> **端口变更**：自本版本起，SOCKS 基础监听端口默认 `10080`，Web 管理/管理 API 端口默认 `10070`（原为 `1080` / `8080`）。升级后如仍想使用旧端口，请修改配置文件中的 `socks.listen_address` 和 `admin.listen_address`；否则请同步更新客户端的 `-admin` 地址、防火墙放行规则和反向代理配置。
 
 ## 本地运行
 
@@ -159,7 +168,7 @@ go run ./cmd/ipv6-proxy-pool -config config.json
 Web 管理界面默认地址：
 
 ```text
-http://127.0.0.1:8080/
+http://127.0.0.1:10070/
 ```
 
 Web 控制台分四个页签，全部管理操作均可在浏览器完成：
@@ -207,7 +216,7 @@ Authorization: Bearer <token>
 
 ```powershell
 Invoke-RestMethod -Method Post `
-  -Uri http://127.0.0.1:8080/v1/leases `
+  -Uri http://127.0.0.1:10070/v1/leases `
   -ContentType application/json `
   -Body '{"id":"client-a","persistent":false}'
 ```
@@ -237,20 +246,20 @@ Invoke-RestMethod -Method Post `
 
 ```bash
 # 申请代理：返回 SOCKS5 端口和出口 IPv6
-ipv6-proxy-pool client create -name client-a -admin http://服务器:8080 -token <令牌> -server 服务器公网IP
+ipv6-proxy-pool client create -name client-a -admin http://服务器:10070 -token <令牌> -server 服务器公网IP
 
 # 更换出口 IPv6（端口不变）
-ipv6-proxy-pool client rotate -name client-a -admin http://服务器:8080 -token <令牌>
+ipv6-proxy-pool client rotate -name client-a -admin http://服务器:10070 -token <令牌>
 
 # 释放并立即重新获取（同 ID，新端口 + 新 IPv6）
-ipv6-proxy-pool client recycle -name client-a -admin http://服务器:8080 -token <令牌>
+ipv6-proxy-pool client recycle -name client-a -admin http://服务器:10070 -token <令牌>
 
 # 销毁代理并回收端口 / IPv6
-ipv6-proxy-pool client delete -name client-a -admin http://服务器:8080 -token <令牌>
+ipv6-proxy-pool client delete -name client-a -admin http://服务器:10070 -token <令牌>
 
 # 查看所有租约 / 服务状态
-ipv6-proxy-pool client list   -admin http://服务器:8080 -token <令牌>
-ipv6-proxy-pool client status -admin http://服务器:8080 -token <令牌>
+ipv6-proxy-pool client list   -admin http://服务器:10070 -token <令牌>
+ipv6-proxy-pool client status -admin http://服务器:10070 -token <令牌>
 ```
 
 令牌也可以通过环境变量 `IPV6_PROXY_POOL_TOKEN` 提供，避免出现在命令行历史中。`-server` 参数用于拼装 `host:port` 形式的 SOCKS5 地址，省略时取 `-admin` 的主机部分。
@@ -258,6 +267,13 @@ ipv6-proxy-pool client status -admin http://服务器:8080 -token <令牌>
 客户端拿到端口后，把 SOCKS5 代理指向 `服务器:端口` 即可，所有请求都会从该租约对应的 IPv6 地址出站。
 
 ## Docker 部署
+
+从仓库拉取代码并部署：
+
+```bash
+git clone https://github.com/yhw5231/ipv6-proxy-pool.git
+cd ipv6-proxy-pool
+```
 
 构建镜像：
 
@@ -272,6 +288,23 @@ docker compose up -d --build
 ```
 
 Compose 使用 Linux `network_mode: host`，使容器可以直接使用宿主机网络命名空间中的 IPv6 路由和监听端口。配置中包含 `NET_ADMIN` capability，但程序本身不会自动向网卡添加 IPv6 地址。
+
+### 容器在线更新
+
+已通过 Compose 部署后，使用仓库自带的更新脚本即可一条命令完成"拉取最新代码 → 重建镜像 → 滚动重启容器"：
+
+```bash
+chmod +x docker-update.sh       # 首次使用前赋予执行权限
+./docker-update.sh              # 拉取最新代码并更新容器（推荐）
+./docker-update.sh --skip-pull  # 跳过 git pull，仅用当前代码重建容器
+```
+
+说明：
+
+- 脚本只重建镜像和重启容器，**不会改动 `config.json`**，令牌、租约配置全部保留；更新期间代理会短暂中断，请选择合适的时机执行
+- 默认拉取 `origin` 远程仓库的当前分支；仓库地址可用环境变量 `IPV6_PROXY_POOL_REPO` 覆盖，管理端口可用 `IPV6_PROXY_POOL_ADMIN_PORT` 覆盖（用于更新后的健康检查）
+- 更新完成后脚本会自动调用 `/healthz` 健康检查，并清理悬空的旧镜像
+- 也可以手动执行等价操作：`git pull && docker compose up -d --build`
 
 推荐在原生 Linux 宿主机上部署。Windows Docker Desktop 的 host 网络运行在 Linux 虚拟机中，不等价于原生 Linux host 网络，也不会自动把 Windows 网卡获得的完整 IPv6 前缀路由给容器。
 

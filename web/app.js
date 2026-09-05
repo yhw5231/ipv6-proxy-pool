@@ -542,7 +542,7 @@
 
   function adminUrlValue(cfg) {
     const port = String(cfg?.admin?.listen_address || '').split(':').pop();
-    return `http://${serverHost()}:${/^\d+$/.test(port) ? port : 8080}`;
+    return `http://${serverHost()}:${/^\d+$/.test(port) ? port : 10070}`;
   }
 
   function socksHostValue(cfg) {
@@ -557,7 +557,7 @@
     const cfg = state.config;
     if (!cfg) return [];
     const adminPort = String(cfg.admin?.listen_address || '').split(':').pop();
-    const port = /^\d+$/.test(adminPort) ? adminPort : '8080';
+    const port = /^\d+$/.test(adminPort) ? adminPort : '10070';
     const leaseIds = [...new Set(state.leases.filter((item) => item.role !== 'standby').map((item) => item.id).filter(Boolean))].join(', ');
     const rotateMinutes = Math.max(0, Number(cfg.rotate_after || 0) / 1000000000 / 60);
     return [

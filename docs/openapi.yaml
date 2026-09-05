@@ -13,7 +13,7 @@ info:
     错误格式统一为 {"error": "..."}。
   version: 1.1.0
 servers:
-  - url: http://{host}:8080
+  - url: http://{host}:10070
     description: 服务器地址与 admin.listen_address 端口
     variables:
       host:
@@ -512,7 +512,7 @@ components:
           enum: [multiplex, per_ipv6]
         socks_listen_address:
           type: string
-          example: "[::]:1080"
+          example: "[::]:10080"
         port_start:
           type: integer
           description: 动态端口范围起点
@@ -591,7 +591,7 @@ components:
         listen_address:
           type: string
           description: SOCKS5 监听地址（multiplex 模式直接监听该地址）
-          example: "[::]:1080"
+          example: "[::]:10080"
         port_start:
           type: integer
           description: per_ipv6 动态端口范围起点
@@ -614,7 +614,7 @@ components:
         listen_address:
           type: string
           description: 管理 API 与 Web 监听地址
-          example: "[::]:8080"
+          example: "[::]:10070"
         token:
           type: string
           minLength: 8

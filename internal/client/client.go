@@ -232,7 +232,7 @@ func PrintUsage() {
   ipv6-proxy-pool client help
 
 通用参数：
-  -admin    管理 API 地址（默认 http://127.0.0.1:8080）
+  -admin    管理 API 地址（默认 http://127.0.0.1:10070）
   -token    管理令牌；也可通过环境变量 IPV6_PROXY_POOL_TOKEN 提供
   -server   公网主机名或 IP，用于拼装 SOCKS5 代理地址（默认取 -admin 的主机部分）
   -name     客户端（租约）标识，用于在服务器上区分不同客户端

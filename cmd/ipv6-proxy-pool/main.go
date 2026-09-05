@@ -248,7 +248,7 @@ func idleSweeper(ctx context.Context, pool *lease.Pool, idleTimeout time.Duratio
 //
 // The first argument is the verb, everything after it is treated as flags:
 //
-//	ipv6-proxy-pool client create -name client-a -admin http://host:8080 -token T
+//	ipv6-proxy-pool client create -name client-a -admin http://host:10070 -token T
 func runClient(args []string) {
 	if len(args) == 0 || args[0] == "help" {
 		client.PrintUsage()
@@ -260,7 +260,7 @@ func runClient(args []string) {
 	}
 
 	flags := flag.NewFlagSet("client", flag.ExitOnError)
-	adminURL := flags.String("admin", "http://127.0.0.1:8080", "management API base URL")
+	adminURL := flags.String("admin", "http://127.0.0.1:10070", "management API base URL")
 	token := flags.String("token", os.Getenv("IPV6_PROXY_POOL_TOKEN"), "admin token (or IPV6_PROXY_POOL_TOKEN env)")
 	server := flags.String("server", "", "public host/IP used to build the SOCKS5 endpoint (defaults to admin host)")
 	name := flags.String("name", "", "client/lease identifier")

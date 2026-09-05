@@ -56,11 +56,11 @@ func Default() Config {
 		RotateRequests: 0,
 		SOCKS: SOCKSConfig{
 			Mode:          ModeMultiplex,
-			ListenAddress: "127.0.0.1:1080",
+			ListenAddress: "127.0.0.1:10080",
 			PortStart:     20000,
 			PortEnd:       21023,
 		},
-		Admin: AdminConfig{ListenAddress: "127.0.0.1:8080"},
+		Admin: AdminConfig{ListenAddress: "127.0.0.1:10070"},
 	}
 }
 

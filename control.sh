@@ -26,8 +26,8 @@ MIN_LEASES=1024                   # 常驻备用租约数（池子始终保有�
 MAX_LEASES=2048                   # 常驻备用 + 客户端租约的总上限
 PORT_START=20000
 PORT_END=22047
-SOCKS_BASE_LISTEN="[::]:1080"     # 仅用于提取绑定主机，实际端口按租约动态分配
-ADMIN_LISTEN="[::]:8080"
+SOCKS_BASE_LISTEN="[::]:10080"    # 仅用于提取绑定主机，实际端口按租约动态分配
+ADMIN_LISTEN="[::]:10070"
 IDLE_TIMEOUT_MIN=60               # 客户端空闲多长时间后自动回收（分钟，仅当总数超过常驻数时生效）
 
 # 颜色
@@ -65,6 +65,7 @@ usage() {
   client-recycle <名称>    释放并立即重新获取（新端口 + 新 IPv6）
   client-delete <名称>     释放并销毁客户端代理
   uninstall        停止并卸载（配置自动备份到当前用户主目录）
+  update           在线更新：拉取仓库最新代码，重建二进制并重启服务
   help             显示本帮助
 EOF
 }
@@ -102,6 +103,26 @@ resolve_binary() {
     fi
     error "go build 失败，请查看上方错误（最常见原因：Go 版本低于 go.mod 声明的版本）。"
     return 1
+  fi
+  return 1
+}
+
+# 强制用当前源码构建二进制（update 专用；resolve_binary 会优先复用已安装的旧版本）
+build_fresh_binary() {
+  export PATH="$PATH:/usr/local/go/bin:/usr/lib/go/bin"
+  if command -v go >/dev/null 2>&1; then
+    info "使用 Go: $(command -v go) ($({ go version; } 2>/dev/null || echo '未知版本'))"
+    if (cd "$SCRIPT_DIR" && go build -trimpath -ldflags="-s -w" -o "bin/${BINARY_NAME}" "./cmd/${BINARY_NAME}"); then
+      printf '%s' "${SCRIPT_DIR}/bin/${BINARY_NAME}"
+      return 0
+    fi
+    error "go build 失败，请查看上方错误。"
+    return 1
+  fi
+  if [ -x "${SCRIPT_DIR}/bin/${BINARY_NAME}" ]; then
+    warn "未检测到 Go，使用 ${SCRIPT_DIR}/bin/ 中现有的二进制（可能不是最新代码构建的）。"
+    printf '%s' "${SCRIPT_DIR}/bin/${BINARY_NAME}"
+    return 0
   fi
   return 1
 }
@@ -171,10 +192,10 @@ except Exception:
     pass
 " 2>/dev/null)
   fi
-  [ -z "$addr" ] && addr="127.0.0.1:8080"
+  [ -z "$addr" ] && addr="127.0.0.1:10070"
   port=${addr##*:}
   case "$port" in
-    ''|*[!0-9]*) port=8080 ;;
+    ''|*[!0-9]*) port=10070 ;;
   esac
   printf 'http://127.0.0.1:%s' "$port"
 }
@@ -255,8 +276,8 @@ PY
       esac
     done <<< "$(grep -oE '"[a-z0-9_]+"[[:space:]]*:[[:space:]]*("[^"]*"|[0-9]+)' "$CONFIG_FILE" 2>/dev/null | sed -E 's/^"([a-z0-9_]+)"[[:space:]]*:[[:space:]]*/\1|/; s/"//g')"
   fi
-  case "$R_ADMIN_ADDR" in *:*) ;; *) R_ADMIN_ADDR="127.0.0.1:8080" ;; esac
-  case "$R_SOCKS_ADDR" in *:*) ;; *) R_SOCKS_ADDR="[::]:1080" ;; esac
+  case "$R_ADMIN_ADDR" in *:*) ;; *) R_ADMIN_ADDR="127.0.0.1:10070" ;; esac
+  case "$R_SOCKS_ADDR" in *:*) ;; *) R_SOCKS_ADDR="[::]:10080" ;; esac
   case "$R_PORT_START" in ''|*[!0-9]*) R_PORT_START=20000 ;; esac
   case "$R_PORT_END" in ''|*[!0-9]*) R_PORT_END=22047 ;; esac
 }
@@ -286,7 +307,7 @@ show_connection_info() {
   [ -z "$pub_ip" ] && pub_ip="<服务器公网IP>"
   admin_port=${R_ADMIN_ADDR##*:}
   case "$admin_port" in
-    ''|*[!0-9]*) admin_port=8080 ;;
+    ''|*[!0-9]*) admin_port=10070 ;;
   esac
   rotate_min=$((R_ROTATE_AFTER_NS / 60000000000))
 
@@ -535,7 +556,7 @@ EOF
   echo "在服务器本地，现在就可以为客户端分配代理："
   echo "  sudo $0 client-new client-a"
   echo "远程客户端使用："
-  echo "  ipv6-proxy-pool client create -name client-a -admin http://<服务器IP>:8080 -token <令牌> -server <服务器IP>"
+  echo "  ipv6-proxy-pool client create -name client-a -admin http://<服务器IP>:10070 -token <令牌> -server <服务器IP>"
   echo "或  ./control.sh client-new client-a 之后把输出的 127.0.0.1 换成服务器公网地址"
 }
 
@@ -704,6 +725,68 @@ client_delete() {
 }
 
 # ---------------------------------------------------------------------------
+# 在线更新：git pull 后重建二进制并重启服务
+# ---------------------------------------------------------------------------
+do_update() {
+  local repo_url=${IPV6_PROXY_POOL_REPO:-https://github.com/yhw5231/ipv6-proxy-pool.git}
+  if [ -d "${SCRIPT_DIR}/.git" ]; then
+    if ! command -v git >/dev/null 2>&1; then
+      error "未找到 git，无法在线更新。请先安装 git。"
+      return 1
+    fi
+    if ! git -C "$SCRIPT_DIR" remote get-url origin >/dev/null 2>&1; then
+      git -C "$SCRIPT_DIR" remote add origin "$repo_url"
+    fi
+    local branch
+    branch=$(git -C "$SCRIPT_DIR" rev-parse --abbrev-ref HEAD)
+    info "拉取最新代码（分支 ${branch}）..."
+    if ! git -C "$SCRIPT_DIR" pull --ff-only origin "$branch"; then
+      error "git pull 失败（本地有改动或历史分叉）。"
+      echo "  - 查看本地改动: git -C $SCRIPT_DIR status"
+      echo "  - 丢弃本地改动: git -C $SCRIPT_DIR reset --hard origin/${branch}（会丢弃所有本地修改）"
+      return 1
+    fi
+  else
+    warn "目录不是 Git 仓库，跳过拉取，直接重建当前代码。"
+  fi
+
+  echo
+  echo "=== 重建二进制 ==="
+  local binary=""
+  binary=$(build_fresh_binary) || {
+    error "构建失败：未检测到 Go 且 ${SCRIPT_DIR}/bin/ 中没有二进制。"
+    error "请安装 Go（sudo command -v go 验证）或把构建好的 ${BINARY_NAME} 放到 ${SCRIPT_DIR}/bin/。"
+    return 1
+  }
+
+  echo
+  echo "=== 更新文件 ==="
+  mkdir -p "$INSTALL_DIR"
+  cp "$binary" "$INSTALL_DIR/${BINARY_NAME}" && chmod 755 "$INSTALL_DIR/${BINARY_NAME}"
+  info "二进制已更新: $INSTALL_DIR/${BINARY_NAME}"
+  [ -d "$SCRIPT_DIR/web" ] && { rm -rf "$INSTALL_DIR/web"; cp -r "$SCRIPT_DIR/web" "$INSTALL_DIR/"; }
+
+  if [ -f "$SERVICE_FILE" ]; then
+    echo
+    echo "=== 重启服务 ==="
+    systemctl restart "${SERVICE_NAME}.service"
+    sleep 1
+    if service_is_active; then
+      info "在线更新完成，服务已重启。"
+    else
+      error "服务重启失败，日志："
+      journalctl -u "${SERVICE_NAME}.service" -n 20 --no-pager -o cat 2>/dev/null | tail -n 20 || true
+      return 1
+    fi
+  else
+    info "尚未通过 install 安装 systemd 服务，如需部署请执行: $0 install"
+  fi
+  local rev
+  rev=$(git -C "$SCRIPT_DIR" rev-parse --short HEAD 2>/dev/null || echo "未知")
+  echo "  当前版本: $rev"
+}
+
+# ---------------------------------------------------------------------------
 # 交互菜单
 # ---------------------------------------------------------------------------
 menu() {
@@ -721,7 +804,7 @@ menu() {
     echo "  ${C_CYAN}9${C_RESET}) 新建客户端代理            ${C_CYAN}10${C_RESET}) 更换客户端 IP"
     echo "  ${C_CYAN}11${C_RESET}) 释放并换新（回收重建）    ${C_CYAN}12${C_RESET}) 租约列表"
     echo "  ${C_CYAN}13${C_RESET}) 释放空闲租约             ${C_CYAN}14${C_RESET}) 销毁客户端代理"
-    echo "  ${C_CYAN}15${C_RESET}) 客户端连接信息"
+    echo "  ${C_CYAN}15${C_RESET}) 客户端连接信息           ${C_CYAN}16${C_RESET}) 在线更新"
     echo "  ${C_RED}0${C_RESET}) 卸载                    ${C_YELLOW}q${C_RESET}) 退出"
     echo "${C_BOLD}------------------------------------------------------${C_RESET}"
     read -rp "请选择操作: " choice
@@ -741,6 +824,7 @@ menu() {
       13) do_release_idle ;;
       14) client_delete ;;
       15) show_connection_info ;;
+      16) do_update ;;
       0) do_uninstall ;;
       q|Q) echo "再见。"; exit 0 ;;
       *) warn "无效选项：$choice" ;;
@@ -775,8 +859,9 @@ case "$cmd" in
   client-new|client-create) client_new "${1:-}" ;;
   client-rotate)   client_rotate "${1:-}" ;;
   client-recycle)  client_recycle "${1:-}" ;;
-  client-delete)   client_delete "${1:-}" ;;
+  client-delete|client-remove) client_delete "${1:-}" ;;
   uninstall)       do_uninstall ;;
+  update)          do_update ;;
   help|--help|-h)  usage ;;
   *) error "未知命令: $cmd"; usage; exit 1 ;;
 esac
