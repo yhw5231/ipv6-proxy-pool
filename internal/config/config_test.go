@@ -285,3 +285,24 @@ func TestSaveAtomicReportsNonBusyRenameErrors(t *testing.T) {
 		t.Fatalf("SaveAtomic() error = %v, want a replace config failure", err)
 	}
 }
+
+func TestPerIPv6PortRangeValidationMessage(t *testing.T) {
+	cfg := Default()
+	cfg.SOCKS.Mode = ModePerIPv6
+	cfg.SOCKS.PortStart = 20000
+	cfg.SOCKS.PortEnd = 21023 // 1024 个端口，小于 max_leases
+	cfg.MaxLeases = 2048
+
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("Validate() succeeded with a port range smaller than max_leases")
+	}
+	if !strings.Contains(err.Error(), "1024") || !strings.Contains(err.Error(), "2048") {
+		t.Fatalf("Validate() error = %q, want it to name the port count and max_leases", err)
+	}
+
+	cfg.SOCKS.PortEnd = 22047 // 恰好 2048 个端口
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate() with an exactly-sized range error = %v", err)
+	}
+}

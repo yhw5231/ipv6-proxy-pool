@@ -160,7 +160,8 @@ func (c Config) Validate() error {
 		return errors.New("socks.always_on_ports must not contain more entries than max_leases")
 	}
 	if c.SOCKS.Mode == ModePerIPv6 && c.SOCKS.PortEnd-c.SOCKS.PortStart+1 < c.MaxLeases {
-		return errors.New("per_ipv6 mode requires a port range at least as large as max_leases")
+		return fmt.Errorf("per_ipv6 mode requires a port range (%d ports) at least as large as max_leases (%d): widen the port range or lower max_leases",
+			c.SOCKS.PortEnd-c.SOCKS.PortStart+1, c.MaxLeases)
 	}
 	if len(c.Admin.Token) > 0 && len(c.Admin.Token) < 8 {
 		return errors.New("admin.token must be at least 8 characters when set")

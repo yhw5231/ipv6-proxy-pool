@@ -715,6 +715,32 @@
     if (!field) return;
     field.classList.toggle('is-disabled', !perIPv6);
     $('alwaysOnPorts').disabled = !perIPv6;
+    // 切到 per_ipv6 时端口范围可能不够，自动补齐并告知用户。
+    ensurePerIPv6PortRange({ announce: true });
+  }
+
+  // per_ipv6 模式每个租约独占一个端口，要求端口范围 ≥ 最大租约数。
+  // 不足时自动把范围结束值扩展到刚好容纳 max_leases；超出端口上限则
+  // 明确提示用户手动调整，避免保存时被后端校验拒绝。
+  function ensurePerIPv6PortRange({ announce } = {}) {
+    const perIPv6 = document.querySelector('input[name="mode"]:checked')?.value === 'per_ipv6';
+    if (!perIPv6) return;
+    const start = Number(getValue('portStart'));
+    const end = Number(getValue('portEnd'));
+    const max = Number(getValue('maxLeases'));
+    if (!Number.isInteger(start) || !Number.isInteger(end) || !Number.isInteger(max) || start < 1 || max < 1) return;
+    const needed = start + max - 1;
+    if (end >= needed) return;
+    if (needed > 65535) {
+      if (announce) {
+        notify(`端口范围不足以容纳 ${max} 个租约（范围结束值至少需要 ${needed}，已超上限 65535），请调低最大租约数或减小端口范围起始值。`, 'error');
+      }
+      return;
+    }
+    putValue('portEnd', needed);
+    if (announce) {
+      notify(`已自动把端口范围结束值扩展到 ${needed}，以满足 per_ipv6 模式「范围 ≥ 最大租约数」。`);
+    }
   }
 
   function parseAlwaysOnPorts(value) {
@@ -907,6 +933,8 @@
     const button = $('saveButton');
     button.disabled = true;
     try {
+      // 保存前兜底：per_ipv6 模式下端口范围必须 ≥ 最大租约数，不足则自动补齐。
+      ensurePerIPv6PortRange({ announce: true });
       const result = await request('/v1/config', { method: 'PUT', body: JSON.stringify(readConfig()) });
       if (result.config) state.config = result.config;
       setConfigDirty(false);
