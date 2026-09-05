@@ -1,7 +1,12 @@
 package config
 
 import (
+	"encoding/json"
+	"errors"
+	"os"
+	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -136,5 +141,100 @@ func TestMinLeasesValidation(t *testing.T) {
 	zero.MinLeases = 0
 	if err := zero.Validate(); err != nil {
 		t.Fatalf("Validate() min=0 error = %v", err)
+	}
+}
+
+func TestSaveAtomicWritesConfig(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+
+	if err := SaveAtomic(path, Default()); err != nil {
+		t.Fatalf("SaveAtomic() error = %v", err)
+	}
+
+	cfg := Default()
+	cfg.MinLeases = 512
+	if err := SaveAtomic(path, cfg); err != nil {
+		t.Fatalf("SaveAtomic() over existing file error = %v", err)
+	}
+
+	loaded, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load() after save error = %v", err)
+	}
+	if loaded.MinLeases != 512 {
+		t.Fatalf("loaded min_leases = %d, want 512", loaded.MinLeases)
+	}
+}
+
+func TestSaveAtomicFallsBackToInPlaceOnEBUSY(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+	if err := os.WriteFile(path, []byte("stale"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	original := renameFn
+	renameFn = func(_, _ string) error { return syscall.EBUSY }
+	defer func() { renameFn = original }()
+
+	cfg := Default()
+	if err := SaveAtomic(path, cfg); err != nil {
+		t.Fatalf("SaveAtomic() error = %v", err)
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var saved Config
+	if err := json.Unmarshal(data, &saved); err != nil {
+		t.Fatalf("saved config is not valid JSON: %v", err)
+	}
+	if saved.IPv6Prefix != cfg.IPv6Prefix {
+		t.Fatalf("saved ipv6_prefix = %q, want %q", saved.IPv6Prefix, cfg.IPv6Prefix)
+	}
+}
+
+func TestSaveAtomicEBUSYLeavesNoTemporaryFiles(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+	if err := os.WriteFile(path, []byte("stale"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	original := renameFn
+	renameFn = func(_, _ string) error { return syscall.EBUSY }
+	defer func() { renameFn = original }()
+
+	if err := SaveAtomic(path, Default()); err != nil {
+		t.Fatalf("SaveAtomic() error = %v", err)
+	}
+
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if entry.Name() != "config.json" {
+			t.Fatalf("temporary file %q left behind after save", entry.Name())
+		}
+	}
+}
+
+func TestSaveAtomicReportsNonBusyRenameErrors(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+	if err := os.WriteFile(path, []byte("stale"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	original := renameFn
+	renameFn = func(_, _ string) error { return errors.New("disk failure") }
+	defer func() { renameFn = original }()
+
+	err := SaveAtomic(path, Default())
+	if err == nil || !strings.Contains(err.Error(), "replace config") {
+		t.Fatalf("SaveAtomic() error = %v, want a replace config failure", err)
 	}
 }

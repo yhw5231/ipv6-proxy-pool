@@ -1,7 +1,6 @@
 (() => {
   'use strict';
 
-  const TOKEN_KEY = 'ipv6ProxyToken';
   const AUTO_REFRESH_MS = 5000;
   const MAX_RENDER_ROWS = 300;
 
@@ -15,24 +14,68 @@
     configDirty: false,
     refreshTimer: null,
     lastFocused: null,
+    loggedIn: false,
   };
 
   const $ = (id) => document.getElementById(id);
   const durationToSeconds = (value) => Number(value || 0) / 1000000000;
   const secondsToDuration = (value) => Math.max(0, Number(value || 0)) * 1000000000;
-  const getToken = () => localStorage.getItem(TOKEN_KEY) || '';
-  const setToken = (value) => localStorage.setItem(TOKEN_KEY, value);
+
+  // ---------- 登录状态 ----------
+
+  function setLoggedIn(loggedIn) {
+    state.loggedIn = loggedIn;
+    document.body.classList.toggle('is-logged-out', !loggedIn);
+    const overlay = $('loginOverlay');
+    if (overlay) overlay.hidden = loggedIn;
+    if (!loggedIn) {
+      const error = $('loginError');
+      if (error) error.hidden = true;
+      const password = $('loginPassword');
+      if (password) password.value = '';
+    }
+  }
+
+  function handleUnauthorized() {
+    setLoggedIn(false);
+  }
+
+  async function login(username, password) {
+    const response = await fetch('/v1/auth/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username, password }),
+    });
+    if (!response.ok) {
+      let message = `${response.status} ${response.statusText}`;
+      try { message = (await response.json()).error || message; } catch (_) {}
+      throw new Error(message);
+    }
+  }
+
+  async function bootstrapAuth() {
+    try {
+      const response = await fetch('/v1/auth/session');
+      const session = await response.json();
+      setLoggedIn(Boolean(session.authenticated));
+      if (session.authenticated) {
+        await refresh();
+        scheduleAutoRefresh();
+      }
+    } catch (_) {
+      setLoggedIn(false);
+      notify('无法连接管理 API，请确认服务正在运行。', 'error');
+    }
+  }
 
   // ---------- 基础请求 ----------
 
   async function request(path, options = {}) {
     const headers = { 'Content-Type': 'application/json', ...(options.headers || {}) };
-    const token = getToken();
-    if (token) headers.Authorization = `Bearer ${token}`;
     const response = await fetch(path, { ...options, headers });
     if (response.status === 401) {
-      openTokenModal();
-      throw new Error('需要管理令牌：请在右上角「令牌」中填写 config.json 的 admin.token');
+      handleUnauthorized();
+      throw new Error('登录已失效，请重新登录。');
     }
     if (!response.ok) {
       let message = `${response.status} ${response.statusText}`;
@@ -125,30 +168,6 @@
     const hook = cancelHook;
     cancelHook = null;
     hook?.();
-  }
-
-  function openTokenModal() {
-    const field = document.createElement('label');
-    field.className = 'field';
-    const hint = document.createElement('span');
-    hint.textContent = '管理令牌（admin.token）';
-    const input = document.createElement('input');
-    input.type = 'text';
-    input.autocomplete = 'off';
-    input.value = getToken();
-    input.placeholder = '未启用令牌则留空';
-    field.append(hint, input);
-    const note = document.createElement('small');
-    note.textContent = '令牌仅保存在本浏览器（localStorage），用于访问本管理 API。';
-    openModal({
-      title: '管理令牌',
-      body: [field, note],
-      actions: [
-        { label: '清除保存的令牌', className: 'danger-outline-button', onClick: () => { localStorage.removeItem(TOKEN_KEY); closeModal(); notify('已清除本机保存的令牌。'); refresh(); } },
-        { label: '取消', className: 'secondary-button', onClick: closeModal },
-        { label: '保存', className: 'primary-button', onClick: () => { setToken(input.value.trim()); closeModal(); notify('令牌已保存，正在重新加载数据。'); refresh(); } },
-      ],
-    });
   }
 
   function openCreateLeaseModal() {
@@ -389,6 +408,7 @@
       ['时间轮换', rotateAfter > 0 ? `每 ${formatDurationHuman(rotateAfter)}` : '关闭'],
       ['请求数轮换', cfg.rotate_requests > 0 ? `每 ${formatNumber(cfg.rotate_requests)} 次请求` : '关闭'],
       ['管理 API', cfg.admin?.listen_address],
+      ['Web 登录账号', cfg.admin?.webui?.username || 'admin'],
       ['令牌保护', state.status?.token_required ? '已启用' : '未启用'],
     ];
     list.replaceChildren(...entries.map(([name, value]) => {
@@ -651,6 +671,9 @@
     putValue('adminListenAddress', cfg.admin.listen_address);
     // 出于安全考虑不回显令牌；留空提交表示保持现有令牌不变。
     putValue('adminToken', '');
+    putValue('webuiUsername', cfg.admin?.webui?.username || 'admin');
+    // 密码同样不回显；留空提交表示保持现有密码不变。
+    putValue('webuiPassword', '');
     const mode = document.querySelector(`input[name="mode"][value="${cfg.socks.mode}"]`);
     if (mode) mode.checked = true;
     updateModeDependentFields();
@@ -699,7 +722,12 @@
       admin: {
         listen_address: getValue('adminListenAddress').trim(),
         // 留空 = 保持现有令牌（表单不回显令牌）。
-        token: getValue('adminToken').trim() || (state.config?.admin?.token || '')
+        token: getValue('adminToken').trim() || (state.config?.admin?.token || ''),
+        webui: {
+          username: getValue('webuiUsername').trim() || (state.config?.admin?.webui?.username || ''),
+          // 留空 = 保持现有密码（表单不回显密码）。
+          password: getValue('webuiPassword') || (state.config?.admin?.webui?.password || '')
+        }
       }
     };
   }
@@ -712,6 +740,7 @@
   // ---------- 刷新与自动刷新 ----------
 
   async function refresh() {
+    if (!state.loggedIn) return;
     try {
       const [status, leases, config] = await Promise.all([
         request('/v1/status'),
@@ -772,7 +801,6 @@
   if (initialTab) activateTab(initialTab);
 
   $('refreshButton')?.addEventListener('click', () => refresh());
-  $('tokenButton')?.addEventListener('click', openTokenModal);
   $('leaseFilter')?.addEventListener('input', renderLeases);
   $('showStandbyToggle')?.addEventListener('change', async (event) => {
     state.includeStandby = event.target.checked;
@@ -850,6 +878,33 @@
     if (event.target?.closest('[data-close-modal]')) { fireCancelHook(); closeModal(); }
   });
 
-  refresh();
-  scheduleAutoRefresh();
+  // ---------- 登录 / 退出 ----------
+
+  $('loginForm')?.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const button = $('loginSubmit');
+    const error = $('loginError');
+    button.disabled = true;
+    error.hidden = true;
+    try {
+      await login($('loginUsername').value.trim(), $('loginPassword').value);
+      setLoggedIn(true);
+      notify('登录成功。');
+      await refresh();
+      scheduleAutoRefresh();
+    } catch (err) {
+      error.textContent = err.message;
+      error.hidden = false;
+    } finally {
+      button.disabled = false;
+    }
+  });
+
+  $('logoutButton')?.addEventListener('click', async () => {
+    try { await fetch('/v1/auth/logout', { method: 'POST' }); } catch (_) {}
+    setLoggedIn(false);
+    if (state.refreshTimer) { clearInterval(state.refreshTimer); state.refreshTimer = null; }
+  });
+
+  bootstrapAuth();
 })();

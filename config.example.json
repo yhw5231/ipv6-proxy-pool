@@ -18,6 +18,10 @@
               },
     "admin":  {
                   "listen_address":  "[::]:10070",
-                  "token":  ""
+                  "token":  "",
+                  "webui":  {
+                                "username":  "admin",
+                                "password":  "admin"
+                            }
               }
 }

@@ -18,6 +18,10 @@ import (
 	"ipv6-proxy-pool/internal/listener"
 )
 
+// errInvalidCredentials is returned for a wrong console login. The message is
+// deliberately vague so it does not reveal whether the username matched.
+var errInvalidCredentials = errors.New("invalid username or password")
+
 // Pool describes the lease operations exposed by the management API.
 type Pool interface {
 	Acquire(id string, persistent bool) (lease.Lease, error)
@@ -32,6 +36,13 @@ type Pool interface {
 	Recycle(id string) (lease.Lease, error)
 	SetPersistent(id string, persistent bool) (lease.Lease, error)
 }
+
+// sessionTTL is how long a successful web console login stays valid. Sessions
+// live in memory only, so restarting the service signs every console out.
+const (
+	sessionCookie = "ipv6_proxy_pool_session"
+	sessionTTL    = 24 * time.Hour
+)
 
 // Options configures management endpoints, per-IPv6 listeners, and optional
 // same-origin web assets.
@@ -50,9 +61,12 @@ func Handler(pool Pool) http.Handler {
 
 // HandlerWithOptions returns the management API and optional web UI handler.
 func HandlerWithOptions(pool Pool, options Options) http.Handler {
-	server := &server{pool: pool, options: options, started: time.Now()}
+	server := &server{pool: pool, options: options, started: time.Now(), sessions: newSessionStore()}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", server.health)
+	mux.HandleFunc("POST /v1/auth/login", server.login)
+	mux.HandleFunc("POST /v1/auth/logout", server.logout)
+	mux.HandleFunc("GET /v1/auth/session", server.sessionInfo)
 	mux.HandleFunc("GET /v1/status", server.status)
 	mux.HandleFunc("GET /v1/config", server.getConfig)
 	mux.HandleFunc("PUT /v1/config", server.saveConfig)
@@ -76,8 +90,9 @@ func HandlerWithOptions(pool Pool, options Options) http.Handler {
 }
 
 // requireToken guards every /v1/* endpoint with a constant-time comparison
-// against the configured admin token. Health checks and static web assets stay
-// open so monitoring and the local UI remain reachable.
+// against the configured admin token. Health checks, static web assets and the
+// console login flow stay open so monitoring, the local UI and sign-in remain
+// reachable; a valid web console session is accepted in place of the header.
 func (s *server) requireToken(next http.Handler) http.Handler {
 	token := "Bearer " + s.options.AdminToken
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -85,8 +100,12 @@ func (s *server) requireToken(next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
+		if strings.HasPrefix(r.URL.Path, "/v1/auth/") {
+			next.ServeHTTP(w, r)
+			return
+		}
 		auth := r.Header.Get("Authorization")
-		if subtle.ConstantTimeCompare([]byte(auth), []byte(token)) != 1 {
+		if subtle.ConstantTimeCompare([]byte(auth), []byte(token)) != 1 && !s.validSession(r) {
 			writeError(w, http.StatusUnauthorized, errors.New("missing or invalid admin token"))
 			return
 		}
@@ -95,10 +114,11 @@ func (s *server) requireToken(next http.Handler) http.Handler {
 }
 
 type server struct {
-	pool    Pool
-	options Options
-	mu      sync.Mutex
-	started time.Time
+	pool     Pool
+	options  Options
+	sessions *sessionStore
+	mu       sync.Mutex
+	started  time.Time
 }
 
 type createLeaseRequest struct {

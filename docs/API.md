@@ -36,7 +36,9 @@
   { "error": "missing or invalid admin token" }
   ```
 
-- `/healthz` 与 Web 静态资源**不需要**令牌，始终开放。
+- Web 控制台另有独立的登录会话认证（凭据来自 `admin.webui`，默认 `admin` / `admin`）：调用 `POST /v1/auth/login` 成功后服务端下发 HttpOnly 会话 Cookie，之后浏览器访问 `/v1/*` 可用会话 Cookie 代替 Bearer 令牌。会话有效期 24 小时，服务重启后全部失效。`/v1/auth/*` 三个接口本身始终开放。
+
+- `/healthz` 与 Web 静态资源**不需要**令牌，始终开放；登录页在浏览器端遮挡控制台面板，未配置 `admin.token` 时 API 仍可被直接调用。
 
 ### 1.4 错误格式
 
@@ -172,12 +174,16 @@
   },
   "admin": {
     "listen_address": "[::]:10070",
-    "token": "可选，文档用途下不建议回传明文"
+    "token": "可选，文档用途下不建议回传明文",
+    "webui": {
+      "username": "admin",
+      "password": "admin"
+    }
   }
 }
 ```
 
-> 注意：`admin.token` 仅本机管理员需要；普通客户端程序**不要**调用配置接口。`multiplex` 模式下 `socks.port_start/port_end/always_on_ports` 不生效。校验要求 `0 ≤ min_leases ≤ max_leases`，且 `per_ipv6` 模式下端口范围大小 ≥ `max_leases`。
+> 注意：`admin.token` 仅本机管理员需要；普通客户端程序**不要**调用配置接口。`multiplex` 模式下 `socks.port_start/port_end/always_on_ports` 不生效。校验要求 `0 ≤ min_leases ≤ max_leases`，且 `per_ipv6` 模式下端口范围大小 ≥ `max_leases`。`admin.webui` 为空时控制台登录回落到默认的 `admin` / `admin`。
 
 ---
 
@@ -189,6 +195,44 @@
 
 ```json
 { "status": "ok" }
+```
+
+---
+
+### 3.1a POST /v1/auth/login — Web 控制台登录（无需令牌）
+
+**请求体**
+
+```json
+{ "username": "admin", "password": "admin" }
+```
+
+**响应 `200`**：校验通过，下发 HttpOnly 会话 Cookie（有效期 24 小时）：
+
+```json
+{ "authenticated": true, "username": "admin" }
+```
+
+**响应 `401`**：`{ "error": "invalid username or password" }`
+
+---
+
+### 3.1b GET /v1/auth/session — 查询登录状态（无需令牌）
+
+**响应 `200`**：未登录时 `authenticated` 为 `false` 且 `username` 为空字符串。
+
+```json
+{ "authenticated": true, "username": "admin" }
+```
+
+---
+
+### 3.1c POST /v1/auth/logout — 退出登录（无需令牌）
+
+删除当前会话并清除 Cookie，始终返回：
+
+```json
+{ "authenticated": false }
 ```
 
 ---

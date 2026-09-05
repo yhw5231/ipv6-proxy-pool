@@ -9,6 +9,8 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
+	"syscall"
 	"time"
 )
 
@@ -44,6 +46,34 @@ type AdminConfig struct {
 	// Token, when set, requires `Authorization: Bearer <token>` on every /v1/*
 	// request. It lets remote clients safely request and manage proxy leases.
 	Token string `json:"token,omitempty"`
+	// WebUI holds the credentials required before the web console shows the
+	// panel. Empty values fall back to WebUIDefaultUsername and
+	// WebUIDefaultPassword so every deployment starts with admin / admin.
+	WebUI WebUIConfig `json:"webui"`
+}
+
+type WebUIConfig struct {
+	Username string `json:"username,omitempty"`
+	Password string `json:"password,omitempty"`
+}
+
+const (
+	WebUIDefaultUsername = "admin"
+	WebUIDefaultPassword = "admin"
+)
+
+// WebUICredentials resolves the effective console login, substituting the
+// built-in admin / admin defaults for blank configuration values.
+func (a AdminConfig) WebUICredentials() (string, string) {
+	username := strings.TrimSpace(a.WebUI.Username)
+	if username == "" {
+		username = WebUIDefaultUsername
+	}
+	password := a.WebUI.Password
+	if password == "" {
+		password = WebUIDefaultPassword
+	}
+	return username, password
 }
 
 func Default() Config {
@@ -60,7 +90,10 @@ func Default() Config {
 			PortStart:     20000,
 			PortEnd:       21023,
 		},
-		Admin: AdminConfig{ListenAddress: "127.0.0.1:10070"},
+		Admin: AdminConfig{
+			ListenAddress: "127.0.0.1:10070",
+			WebUI:         WebUIConfig{Username: WebUIDefaultUsername, Password: WebUIDefaultPassword},
+		},
 	}
 }
 
@@ -125,6 +158,9 @@ func (c Config) Validate() error {
 	if len(c.Admin.Token) > 0 && len(c.Admin.Token) < 8 {
 		return errors.New("admin.token must be at least 8 characters when set")
 	}
+	if len(c.Admin.WebUI.Password) > 0 && len(c.Admin.WebUI.Password) < 4 {
+		return errors.New("admin.webui.password must be at least 4 characters when set")
+	}
 	return nil
 }
 
@@ -163,6 +199,9 @@ func Load(path string) (Config, error) {
 	return cfg, nil
 }
 
+// renameFn is swapped by tests that need to simulate rename failures.
+var renameFn = os.Rename
+
 func SaveAtomic(path string, cfg Config) error {
 	if err := cfg.Validate(); err != nil {
 		return err
@@ -197,8 +236,36 @@ func SaveAtomic(path string, cfg Config) error {
 	if err := temp.Close(); err != nil {
 		return fmt.Errorf("close temporary config: %w", err)
 	}
-	if err := os.Rename(tempName, path); err != nil {
-		return fmt.Errorf("replace config: %w", err)
+	if err := renameFn(tempName, path); err != nil {
+		if !errors.Is(err, syscall.EBUSY) {
+			return fmt.Errorf("replace config: %w", err)
+		}
+		// Single-file bind mounts (docker-compose: ./config.json:/app/config.json)
+		// pin the target inode, so rename over the mount point fails with
+		// EBUSY ("device or resource busy"). Rewrite the mounted file in
+		// place instead; truncating an existing file keeps its ownership
+		// and permissions.
+		if err := writeFileInPlace(path, data); err != nil {
+			return fmt.Errorf("replace config: %w", err)
+		}
 	}
 	return nil
+}
+
+// writeFileInPlace replaces the contents of path without touching its inode,
+// which is the only way to update a file that is a bind-mount target.
+func writeFileInPlace(path string, data []byte) error {
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+	if err != nil {
+		return err
+	}
+	if _, err := file.Write(data); err != nil {
+		file.Close()
+		return err
+	}
+	if err := file.Sync(); err != nil {
+		file.Close()
+		return err
+	}
+	return file.Close()
 }

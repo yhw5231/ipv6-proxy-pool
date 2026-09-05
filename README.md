@@ -120,6 +120,8 @@ Copy-Item .\config.example.json .\config.json
 - `socks.always_on_ports`：启动时保持监听的端口数组，仅适用于 `per_ipv6`
 - `admin.listen_address`：管理 API 和 Web 界面监听地址
 - `admin.token`：可选管理令牌，设置后所有 `/v1/*` 请求都需要 `Authorization: Bearer <token>`（至少 8 位）
+- `admin.webui.username`：Web 控制台登录用户名，默认 `admin`
+- `admin.webui.password`：Web 控制台登录密码，默认 `admin`；打开控制台必须先登录，建议尽快改成强密码
 
 示例（默认值：常驻 1024、上限 2048、空闲 60 分钟回收）：
 
@@ -140,7 +142,11 @@ Copy-Item .\config.example.json .\config.json
   },
   "admin": {
     "listen_address": "[::]:10070",
-    "token": "换成至少8位的随机令牌"
+    "token": "换成至少8位的随机令牌",
+    "webui": {
+      "username": "admin",
+      "password": "换成强密码"
+    }
   }
 }
 ```
@@ -176,9 +182,9 @@ Web 控制台分四个页签，全部管理操作均可在浏览器完成：
 - **运行状态**：服务健康、运行时间、客户端/备用租约数、池容量进度条、累计请求数、活跃监听器，以及常开端口监听表和服务参数一览
 - **代理租约**：新建（弹窗表单）、换 IP、回收换新、删除（带确认）、切换持久保护、按 ID/端口/IPv6 筛选、任意列排序、复制 SOCKS5 地址；可切换显示池内备用租约
 - **客户端接入**：客户端对接参数（管理端 URL、令牌、租约 ID、SOCKS5 地址）一键复制，并附内置 CLI 的完整示例命令
-- **配置**：代理模式、IPv6 前缀、常驻/上限、空闲回收、轮换策略、端口范围、常开端口、监听地址与管理令牌的在线编辑，保存前校验、修改后显示"未保存"徽标，保存成功提示重启生效
+- **配置**：代理模式、IPv6 前缀、常驻/上限、空闲回收、轮换策略、端口范围、常开端口、监听地址、管理令牌与 Web 登录账号密码的在线编辑，保存前校验、修改后显示"未保存"徽标，保存成功提示重启生效
 
-右上角「令牌」入口可在启用 `admin.token` 后登录本机浏览器使用；「自动刷新」开关默认每 5 秒拉取一次状态，页签支持 `#leases` 形式的直链。
+打开控制台会先进入登录页，使用 `admin.webui` 配置的账号密码登录（默认 `admin` / `admin`）后才能看到面板；右上角「退出」可注销会话，服务重启会使所有登录会话失效。`admin.token` 仍按原样保护 REST API 供客户端程序调用；「自动刷新」开关默认每 5 秒拉取一次状态，页签支持 `#leases` 形式的直链。
 
 Web 页面保存的配置写入 config.json，需要重启服务后，新的代理模式、前缀和监听器配置才会完整生效。
 
@@ -193,6 +199,9 @@ Web 页面保存的配置写入 config.json，需要重启服务后，新的代�
 
 ```text
 GET    /healthz
+POST   /v1/auth/login
+POST   /v1/auth/logout
+GET    /v1/auth/session
 GET    /v1/status
 GET    /v1/config
 PUT    /v1/config
@@ -206,7 +215,7 @@ POST   /v1/leases/{id}/recycle
 POST   /v1/leases:release-idle
 ```
 
-设置 `admin.token` 后，除 `/healthz` 和静态资源外，所有 `/v1/*` 请求必须携带请求头：
+`/v1/auth/login`、`/v1/auth/logout`、`/v1/auth/session` 是 Web 控制台的登录会话接口（`GET /v1/auth/session` 无需认证，返回 `{authenticated, username}`）。设置 `admin.token` 后，除 `/healthz`、静态资源和认证接口外，所有 `/v1/*` 请求必须携带请求头或有效的控制台会话 Cookie：
 
 ```text
 Authorization: Bearer <token>
@@ -384,7 +393,8 @@ docker compose config --quiet
 
 ## 安全建议
 
-- 管理 API 默认没有身份认证；建议设置 `admin.token`，并限制管理端口访问来源
+- Web 控制台默认账号密码为 `admin` / `admin`，部署后请立即在「配置」页修改 `admin.webui`，并限制管理端口访问来源
+- 管理 API 在未设置 `admin.token` 时没有认证保护（登录页只挡住浏览器面板，拦不住直接调用 API）；建议设置 `admin.token` 保护 `/v1/*`
 - 为远程客户端分配代理时，务必设置令牌并妥善保管（`install` 会自动生成）
 - 使用防火墙限制 SOCKS5 和管理端口的访问来源
 - 可在管理 API 前部署带认证的反向代理

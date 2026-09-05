@@ -8,7 +8,32 @@
   <link rel="stylesheet" href="./styles.css">
   <script src="./app.js" defer></script>
 </head>
-<body>
+<body class="is-logged-out">
+
+  <!-- ============ 登录 ============ -->
+  <div id="loginOverlay" class="login-overlay">
+    <form id="loginForm" class="login-card">
+      <div class="brand">
+        <div class="brand-mark" aria-hidden="true">v6</div>
+        <div>
+          <p class="eyebrow">IPv6 Proxy Pool</p>
+          <h1>管理控制台登录</h1>
+        </div>
+      </div>
+      <label class="field">
+        <span>用户名</span>
+        <input id="loginUsername" name="username" type="text" autocomplete="username" required>
+      </label>
+      <label class="field">
+        <span>密码</span>
+        <input id="loginPassword" name="password" type="password" autocomplete="current-password" required>
+      </label>
+      <p id="loginError" class="modal-error" role="alert" hidden></p>
+      <button id="loginSubmit" class="primary-button" type="submit">登录</button>
+      <small class="login-hint">默认账号 admin / admin，可在控制台「配置」页修改。</small>
+    </form>
+  </div>
+
   <header class="app-header">
     <div class="brand">
       <div class="brand-mark" aria-hidden="true">v6</div>
@@ -24,7 +49,7 @@
         <span class="switch-track" aria-hidden="true"></span>
         <span class="switch-label">自动刷新</span>
       </label>
-      <button id="tokenButton" class="ghost-button" type="button" title="设置本机保存的管理令牌">令牌</button>
+      <button id="logoutButton" class="ghost-button" type="button" title="退出控制台登录">退出</button>
       <span id="connectionState" class="status-badge" role="status">正在连接</span>
       <button id="refreshButton" class="icon-button" type="button" title="立即刷新" aria-label="刷新数据">↻</button>
     </div>
@@ -284,6 +309,16 @@
               <span>管理令牌（留空保持不变）</span>
               <input id="adminToken" name="adminToken" type="text" autocomplete="off" placeholder="至少 8 位，客户端通过 Bearer 携带">
               <small>启用后所有 /v1/* 请求都需要令牌；输入框留空不会清除已配置的令牌。</small>
+            </label>
+            <label class="field">
+              <span>Web 登录用户名</span>
+              <input id="webuiUsername" name="webuiUsername" type="text" autocomplete="off">
+              <small>控制台登录账号，默认 admin。</small>
+            </label>
+            <label class="field">
+              <span>Web 登录密码（留空保持不变）</span>
+              <input id="webuiPassword" name="webuiPassword" type="password" autocomplete="new-password">
+              <small>控制台登录密码，默认 admin；留空不会清除已配置的密码，修改保存并重启后生效。</small>
             </label>
           </div>
         </section>

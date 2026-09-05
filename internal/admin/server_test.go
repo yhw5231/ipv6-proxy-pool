@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
+	"strings"
 	"testing"
 
 	"ipv6-proxy-pool/internal/config"
@@ -471,5 +473,169 @@ func TestAdminTokenProtectsAPI(t *testing.T) {
 	handler.ServeHTTP(healthResult, health)
 	if healthResult.Code != http.StatusOK {
 		t.Fatalf("health with token configured status = %d", healthResult.Code)
+	}
+}
+
+func loginAsConsole(handler http.Handler, username, password string) *httptest.ResponseRecorder {
+	body := fmt.Sprintf(`{"username":%q,"password":%q}`, username, password)
+	request := httptest.NewRequest(http.MethodPost, "/v1/auth/login", strings.NewReader(body))
+	request.Header.Set("Content-Type", "application/json")
+	result := httptest.NewRecorder()
+	handler.ServeHTTP(result, request)
+	return result
+}
+
+func TestWebUILoginWithDefaultCredentials(t *testing.T) {
+	handler := newTestHandler(t, 2)
+
+	wrong := loginAsConsole(handler, "admin", "nope")
+	if wrong.Code != http.StatusUnauthorized {
+		t.Fatalf("wrong password status = %d, want %d", wrong.Code, http.StatusUnauthorized)
+	}
+
+	unknownUser := loginAsConsole(handler, "root", "admin")
+	if unknownUser.Code != http.StatusUnauthorized {
+		t.Fatalf("unknown user status = %d, want %d", unknownUser.Code, http.StatusUnauthorized)
+	}
+
+	right := loginAsConsole(handler, "admin", "admin")
+	if right.Code != http.StatusOK {
+		t.Fatalf("default login status = %d, body = %s", right.Code, right.Body.String())
+	}
+	cookies := right.Result().Cookies()
+	if len(cookies) == 0 || cookies[0].Value == "" {
+		t.Fatalf("login did not set a session cookie: %v", cookies)
+	}
+	cookie := cookies[0]
+	if !cookie.HttpOnly {
+		t.Fatal("session cookie must be HttpOnly")
+	}
+}
+
+func TestWebUISessionEndpointAndLogout(t *testing.T) {
+	handler := newTestHandler(t, 2)
+
+	anonymous := httptest.NewRequest(http.MethodGet, "/v1/auth/session", nil)
+	anonymousResult := httptest.NewRecorder()
+	handler.ServeHTTP(anonymousResult, anonymous)
+	if anonymousResult.Code != http.StatusOK {
+		t.Fatalf("anonymous session status = %d", anonymousResult.Code)
+	}
+	var anonymousState struct {
+		Authenticated bool `json:"authenticated"`
+	}
+	if err := json.NewDecoder(anonymousResult.Body).Decode(&anonymousState); err != nil {
+		t.Fatalf("decode anonymous session: %v", err)
+	}
+	if anonymousState.Authenticated {
+		t.Fatal("session reports authenticated without a login")
+	}
+
+	login := loginAsConsole(handler, "admin", "admin")
+	cookie := login.Result().Cookies()[0]
+
+	authed := httptest.NewRequest(http.MethodGet, "/v1/auth/session", nil)
+	authed.AddCookie(cookie)
+	authedResult := httptest.NewRecorder()
+	handler.ServeHTTP(authedResult, authed)
+	var state struct {
+		Authenticated bool   `json:"authenticated"`
+		Username      string `json:"username"`
+	}
+	if err := json.NewDecoder(authedResult.Body).Decode(&state); err != nil {
+		t.Fatalf("decode session: %v", err)
+	}
+	if !state.Authenticated || state.Username != "admin" {
+		t.Fatalf("session state = %+v, want authenticated admin", state)
+	}
+
+	logout := httptest.NewRequest(http.MethodPost, "/v1/auth/logout", nil)
+	logout.AddCookie(cookie)
+	logoutResult := httptest.NewRecorder()
+	handler.ServeHTTP(logoutResult, logout)
+	if logoutResult.Code != http.StatusOK {
+		t.Fatalf("logout status = %d, body = %s", logoutResult.Code, logoutResult.Body.String())
+	}
+
+	replayed := httptest.NewRequest(http.MethodGet, "/v1/auth/session", nil)
+	replayed.AddCookie(cookie)
+	replayedResult := httptest.NewRecorder()
+	handler.ServeHTTP(replayedResult, replayed)
+	var replayState struct {
+		Authenticated bool `json:"authenticated"`
+	}
+	if err := json.NewDecoder(replayedResult.Body).Decode(&replayState); err != nil {
+		t.Fatalf("decode post-logout session: %v", err)
+	}
+	if replayState.Authenticated {
+		t.Fatal("session survived logout")
+	}
+}
+
+func TestAdminTokenAcceptsConsoleSession(t *testing.T) {
+	pool, err := lease.NewPool(lease.Options{
+		Prefix:    "2001:db8::/64",
+		MaxLeases: 4,
+	})
+	if err != nil {
+		t.Fatalf("NewPool: %v", err)
+	}
+	handler := HandlerWithOptions(pool, Options{AdminToken: "super-secret-token"})
+
+	// The login endpoint itself must stay reachable while a token is set.
+	sessionInfo := httptest.NewRequest(http.MethodGet, "/v1/auth/session", nil)
+	sessionResult := httptest.NewRecorder()
+	handler.ServeHTTP(sessionResult, sessionInfo)
+	if sessionResult.Code != http.StatusOK {
+		t.Fatalf("session endpoint status = %d, want %d", sessionResult.Code, http.StatusOK)
+	}
+
+	login := loginAsConsole(handler, "admin", "admin")
+	if login.Code != http.StatusOK {
+		t.Fatalf("login status = %d, body = %s", login.Code, login.Body.String())
+	}
+	cookie := login.Result().Cookies()[0]
+
+	withCookie := httptest.NewRequest(http.MethodGet, "/v1/leases", nil)
+	withCookie.AddCookie(cookie)
+	cookieResult := httptest.NewRecorder()
+	handler.ServeHTTP(cookieResult, withCookie)
+	if cookieResult.Code != http.StatusOK {
+		t.Fatalf("session cookie status = %d, body = %s", cookieResult.Code, cookieResult.Body.String())
+	}
+
+	withToken := httptest.NewRequest(http.MethodGet, "/v1/leases", nil)
+	withToken.Header.Set("Authorization", "Bearer super-secret-token")
+	tokenResult := httptest.NewRecorder()
+	handler.ServeHTTP(tokenResult, withToken)
+	if tokenResult.Code != http.StatusOK {
+		t.Fatalf("bearer token status = %d, body = %s", tokenResult.Code, tokenResult.Body.String())
+	}
+}
+
+func TestConfiguredWebUICredentialsOverrideDefaults(t *testing.T) {
+	pool, err := lease.NewPool(lease.Options{
+		Prefix:    "2001:db8::/64",
+		MaxLeases: 4,
+	})
+	if err != nil {
+		t.Fatalf("NewPool: %v", err)
+	}
+	handler := HandlerWithOptions(pool, Options{
+		RuntimeConfig: config.Config{
+			Admin: config.AdminConfig{
+				WebUI: config.WebUIConfig{Username: "ops", Password: "s3cret"},
+			},
+		},
+	})
+
+	defaultLogin := loginAsConsole(handler, "admin", "admin")
+	if defaultLogin.Code != http.StatusUnauthorized {
+		t.Fatalf("default credentials status = %d, want %d", defaultLogin.Code, http.StatusUnauthorized)
+	}
+
+	customLogin := loginAsConsole(handler, "ops", "s3cret")
+	if customLogin.Code != http.StatusOK {
+		t.Fatalf("custom credentials status = %d, body = %s", customLogin.Code, customLogin.Body.String())
 	}
 }

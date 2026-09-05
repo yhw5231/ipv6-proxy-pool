@@ -163,6 +163,18 @@ tbody tr:hover { background: rgba(59, 130, 246, .06); }
 .modal-error { margin: 0; color: var(--danger); font-size: .84rem; }
 .confirm-text { margin: 0; color: #cbd5e1; line-height: 1.6; white-space: normal; }
 
+/* ---------- 登录页 ---------- */
+body.is-logged-out > .app-header,
+body.is-logged-out > main,
+body.is-logged-out > .notification-region { display: none; }
+.login-overlay { position: fixed; inset: 0; z-index: 60; display: grid; place-items: center; padding: 1rem; background: radial-gradient(circle at top, #14264d, var(--bg) 46%); }
+.login-overlay[hidden] { display: none; }
+.login-card { width: min(400px, 100%); display: grid; gap: 1rem; padding: 1.75rem 1.6rem; border: 1px solid var(--border-strong); border-radius: 1rem; background: var(--surface-solid); box-shadow: 0 24px 60px rgba(0, 0, 0, .5); }
+.login-card .brand { margin-bottom: .25rem; }
+.login-card h1 { font-size: 1.2rem; }
+.login-card .primary-button { padding: .75rem; }
+.login-hint { color: var(--muted); font-size: .78rem; text-align: center; }
+
 /* ---------- 通知 ---------- */
 .notification-region { position: fixed; right: 1rem; bottom: 1rem; display: grid; gap: .5rem; width: min(360px, calc(100% - 2rem)); z-index: 50; }
 .toast { padding: .75rem 1rem; border: 1px solid var(--border-strong); border-radius: .65rem; background: #12203c; color: #dbe4f3; font-size: .86rem; box-shadow: 0 10px 28px rgba(0, 0, 0, .35); word-break: break-all; }
