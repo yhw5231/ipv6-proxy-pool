@@ -284,6 +284,7 @@ docker build -t ipv6-proxy-pool .
 使用 Compose：
 
 ```bash
+cp config.example.json config.json   # 首次部署必须：config.json 不在 Git 里
 docker compose up -d --build
 ```
 
@@ -307,6 +308,18 @@ chmod +x docker-update.sh       # 首次使用前赋予执行权限
 - 也可以手动执行等价操作：`git pull && docker compose up -d --build`
 
 推荐在原生 Linux 宿主机上部署。Windows Docker Desktop 的 host 网络运行在 Linux 虚拟机中，不等价于原生 Linux host 网络，也不会自动把 Windows 网卡获得的完整 IPv6 前缀路由给容器。
+
+### 常见问题：mount a directory onto a file
+
+启动报错 `error mounting ... /app/config.json ... Are you trying to mount a directory onto a file (or vice-versa)?`，是因为首次部署时宿主机上没有 `config.json`（该文件不进 Git），Docker Compose 把挂载源自动创建成了**空目录**，随后无法把目录挂载到容器内的文件上。修复：
+
+```bash
+rm -rf config.json                       # 只在它确实是目录时执行
+cp config.example.json config.json
+docker compose up -d
+```
+
+`docker-update.sh` 已内置该检查：缺失时自动从 `config.example.json` 复制，误建为目录时自动修复。
 
 ## 真实 IPv6 网络前提
 

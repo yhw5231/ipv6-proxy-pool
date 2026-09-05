@@ -73,6 +73,27 @@ if [ "$SKIP_PULL" -eq 0 ]; then
 fi
 
 # ---------------------------------------------------------------------------
+# 确保 config.json 存在且是文件
+# config.json 不在 Git 里（.gitignore），首次部署若缺失，Docker 会把挂载源
+# 自动创建成同名空目录，随后报错 "Are you trying to mount a directory onto
+# a file (or vice-versa)?"，容器无法启动。这里提前修复。
+# ---------------------------------------------------------------------------
+CONFIG_FILE="${SCRIPT_DIR}/config.json"
+if [ -d "$CONFIG_FILE" ]; then
+  if rmdir "$CONFIG_FILE" 2>/dev/null; then
+    warn "检测到 config.json 是 Docker 误创建的空目录，已移除。"
+  else
+    error "config.json 是一个非空目录，无法自动修复。请手动检查并处理: $CONFIG_FILE"
+    exit 1
+  fi
+fi
+if [ ! -f "$CONFIG_FILE" ]; then
+  cp "${SCRIPT_DIR}/config.example.json" "$CONFIG_FILE"
+  warn "config.json 不存在，已从 config.example.json 复制默认配置。"
+  warn "请按需修改 ipv6_prefix 等配置（Web 管理界面也可在线修改），再执行更新。"
+fi
+
+# ---------------------------------------------------------------------------
 # 重建镜像并滚动重启（配置文件不改动）
 # ---------------------------------------------------------------------------
 info "重建镜像并更新容器..."
