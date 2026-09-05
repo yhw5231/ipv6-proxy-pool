@@ -8,6 +8,7 @@
     config: null,
     leases: [],
     status: null,
+    tokens: [],
     online: null,
     includeStandby: false,
     sort: { key: 'id', dir: 1 },
@@ -562,6 +563,48 @@
     }
   }
 
+  // ---------- 客户端令牌 ----------
+
+  function renderTokens() {
+    const body = $('tokenTableBody');
+    if (!body) return;
+    body.replaceChildren();
+    const tokens = state.tokens || [];
+    if (!tokens.length) {
+      cell(body.insertRow(), '暂无命名令牌；新建后客户端即可通过 Authorization: Bearer <令牌> 访问管理 API。', 'empty-state').colSpan = 3;
+      return;
+    }
+    for (const item of tokens) {
+      const row = body.insertRow();
+      cell(row, item.name);
+      const tokenCell = cell(row, item.token, 'mono');
+      tokenCell.classList.add('ipv6-cell');
+      const actions = row.insertCell();
+      actions.className = 'actions-cell';
+      actions.appendChild(actionButton('复制', 'secondary-button', '复制令牌值', () => copyText(item.token)));
+      actions.appendChild(actionButton('轮换', 'secondary-button', '生成新令牌值，旧值立即失效', async () => {
+        try {
+          await request(`/v1/tokens/${encodeURIComponent(item.name)}/rotate`, { method: 'POST', body: '{}' });
+          notify(`已轮换令牌 ${item.name}，旧值立即失效。`);
+          await refresh();
+        } catch (error) { notify(error.message, 'error'); }
+      }));
+      actions.appendChild(actionButton('删除', 'danger-button', '删除后该令牌立即失效', async () => {
+        const confirmed = await confirmDialog({
+          title: `删除令牌 ${item.name}`,
+          message: '删除后使用该令牌的客户端将立即无法访问管理 API（已分配的租约不受影响）。确定删除？',
+          confirmText: '删除',
+        });
+        if (!confirmed) return;
+        try {
+          await request(`/v1/tokens/${encodeURIComponent(item.name)}`, { method: 'DELETE' });
+          notify(`已删除令牌 ${item.name}。`);
+          await refresh();
+        } catch (error) { notify(error.message, 'error'); }
+      }));
+    }
+  }
+
   // ---------- 客户端接入 ----------
 
   function serverHost() {
@@ -797,19 +840,22 @@
 
   async function refresh() {
     if (!state.loggedIn) return;
-    try {
-      const [status, leases, config] = await Promise.all([
+try {
+      const [status, leases, config, tokens] = await Promise.all([
         request('/v1/status'),
         request(`/v1/leases${state.includeStandby ? '?include_standby=true' : ''}`),
-        request('/v1/config')
+        request('/v1/config'),
+        request('/v1/tokens'),
       ]);
       state.status = status;
       state.leases = leases;
       state.config = config;
+      state.tokens = tokens?.tokens || [];
       setConnection(true);
       renderStatus();
       renderConnection();
       renderLeases();
+      renderTokens();
       if (!state.configDirty) renderConfig();
       const stamp = $('lastRefreshTime');
       if (stamp) stamp.textContent = `更新于 ${new Date().toLocaleTimeString()}`;
@@ -893,6 +939,22 @@
     if (text) await copyText(text);
   });
 
+  $('tokenCreateForm')?.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const name = $('tokenName').value.trim();
+    if (!name) { notify('请输入令牌名称。', 'error'); return; }
+    const button = $('tokenCreateButton');
+    button.disabled = true;
+    try {
+      const result = await request('/v1/tokens', { method: 'POST', body: JSON.stringify({ name }) });
+      notify(`已创建令牌 ${result.name}，同一令牌可被多个客户端复用。`);
+      $('tokenName').value = '';
+      await refresh();
+    } catch (error) { notify(error.message, 'error'); } finally {
+      button.disabled = false;
+    }
+  });
+
   $('configForm')?.addEventListener('input', () => setConfigDirty(true));
   $('configForm')?.addEventListener('change', (event) => {
     if (event.target?.name === 'mode') updateModeDependentFields();
@@ -907,12 +969,41 @@
 
   $('restoreDefaultsButton')?.addEventListener('click', async () => {
     try {
-      const defaults = await request('/v1/config/defaults');
+      const mode = document.querySelector('input[name="mode"]:checked')?.value || 'multiplex';
+      const defaults = await request(`/v1/config/defaults?mode=${encodeURIComponent(mode)}`);
       renderConfigFrom(defaults);
       setConfigDirty(true);
       $('restartBanner').hidden = true;
       $('saveMessage').textContent = '已填入默认配置，确认后保存生效。';
       notify('已恢复默认配置，请确认后保存。');
+    } catch (error) { notify(error.message, 'error'); }
+  });
+
+  // 保存后重启服务，让新配置真正生效。
+  $('restartServiceButton')?.addEventListener('click', async () => {
+    const confirmed = await confirmDialog({
+      title: '重启服务',
+      message: '将退出当前进程并由部署监督者（docker / systemd）自动拉起，期间代理会短暂中断、控制台需重新登录。确定重启？',
+      confirmText: '重启',
+    });
+    if (!confirmed) return;
+    try {
+      await request('/v1/restart', { method: 'POST', body: '{}' });
+      notify('正在重启服务，等待服务恢复…');
+      $('restartServiceButton').disabled = true;
+      for (let attempt = 0; attempt < 40; attempt++) {
+        await new Promise((resolve) => setTimeout(resolve, 1500));
+        try {
+          const probe = await fetch('/healthz');
+          if (probe.ok) {
+            notify('服务已重启完成。');
+            window.location.reload();
+            return;
+          }
+        } catch (_) { /* 服务尚未就绪，继续等待 */ }
+      }
+      notify('等待服务恢复超时，请手动刷新页面。', 'error');
+      $('restartServiceButton').disabled = false;
     } catch (error) { notify(error.message, 'error'); }
   });
 

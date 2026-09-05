@@ -109,6 +109,15 @@ func run(ctx context.Context, cfg config.Config, configPath string) error {
 			Web:             os.DirFS("web"),
 			ListenerManager: listenerManager,
 			Probe:           socks5.ProbeProxy,
+			// 管理面板的「重启服务」：退出进程，由部署监督者
+			// （docker restart 策略 / systemd Restart=always）按新配置拉起。
+			OnRestart: func() {
+				go func() {
+					time.Sleep(500 * time.Millisecond)
+					log.Println("restart requested from the management console, exiting")
+					os.Exit(0)
+				}()
+			},
 		}),
 		ReadHeaderTimeout: 5 * time.Second,
 	}

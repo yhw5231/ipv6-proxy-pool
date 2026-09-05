@@ -3,7 +3,6 @@ package admin
 import (
 	"bytes"
 	"context"
-	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -65,6 +64,11 @@ type Options struct {
 	// Probe, when set, backs POST /v1/proxies:test. A nil value disables the
 	// endpoint so deployments that do not wire the probe get a clear error.
 	Probe ProbeFunc
+	// OnRestart, when set, backs POST /v1/restart. It runs after the response
+	// is sent and should terminate the process; the deployment supervisor
+	// (docker restart policy or systemd) brings it back up with the new
+	// configuration.
+	OnRestart func()
 }
 
 // Handler preserves the original lease-only API constructor.
@@ -74,7 +78,13 @@ func Handler(pool Pool) http.Handler {
 
 // HandlerWithOptions returns the management API and optional web UI handler.
 func HandlerWithOptions(pool Pool, options Options) http.Handler {
-	server := &server{pool: pool, options: options, started: time.Now(), sessions: newSessionStore()}
+	server := &server{
+		pool:     pool,
+		options:  options,
+		started:  time.Now(),
+		sessions: newSessionStore(),
+		tokens:   newTokenStore(options.AdminToken, options.RuntimeConfig.Admin.Tokens),
+	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", server.health)
 	mux.HandleFunc("POST /v1/auth/login", server.login)
@@ -84,6 +94,7 @@ func HandlerWithOptions(pool Pool, options Options) http.Handler {
 	mux.HandleFunc("GET /v1/config", server.getConfig)
 	mux.HandleFunc("GET /v1/config/defaults", server.getConfigDefaults)
 	mux.HandleFunc("PUT /v1/config", server.saveConfig)
+	mux.HandleFunc("POST /v1/restart", server.restart)
 	mux.HandleFunc("POST /v1/proxies:test", server.testProxy)
 	mux.HandleFunc("GET /v1/leases", server.listLeases)
 	mux.HandleFunc("POST /v1/leases", server.createLease)
@@ -93,23 +104,27 @@ func HandlerWithOptions(pool Pool, options Options) http.Handler {
 	mux.HandleFunc("POST /v1/leases/{id}/rotate", server.rotateLease)
 	mux.HandleFunc("POST /v1/leases/{id}/recycle", server.recycleLease)
 	mux.HandleFunc("POST /v1/leases:release-idle", server.releaseIdle)
+	mux.HandleFunc("GET /v1/tokens", server.listTokens)
+	mux.HandleFunc("POST /v1/tokens", server.createToken)
+	mux.HandleFunc("POST /v1/tokens/{name}/rotate", server.rotateToken)
+	mux.HandleFunc("DELETE /v1/tokens/{name}", server.deleteToken)
 	if options.Web != nil {
 		mux.Handle("/", http.FileServer(http.FS(options.Web)))
 	}
 
 	var handler http.Handler = mux
-	if options.AdminToken != "" {
+	if server.tokens.any() {
 		handler = server.requireToken(handler)
 	}
 	return handler
 }
 
-// requireToken guards every /v1/* endpoint with a constant-time comparison
-// against the configured admin token. Health checks, static web assets and the
-// console login flow stay open so monitoring, the local UI and sign-in remain
-// reachable; a valid web console session is accepted in place of the header.
+// requireToken guards every /v1/* endpoint against the configured bearer
+// tokens (legacy token or any named client token). Health checks, static web
+// assets and the console login flow stay open so monitoring, the local UI and
+// sign-in remain reachable; a valid web console session is accepted in place
+// of the header.
 func (s *server) requireToken(next http.Handler) http.Handler {
-	token := "Bearer " + s.options.AdminToken
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !strings.HasPrefix(r.URL.Path, "/v1/") {
 			next.ServeHTTP(w, r)
@@ -119,8 +134,12 @@ func (s *server) requireToken(next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
-		auth := r.Header.Get("Authorization")
-		if subtle.ConstantTimeCompare([]byte(auth), []byte(token)) != 1 && !s.validSession(r) {
+		if s.validSession(r) {
+			next.ServeHTTP(w, r)
+			return
+		}
+		auth := strings.TrimSpace(r.Header.Get("Authorization"))
+		if !strings.HasPrefix(auth, "Bearer ") || !s.tokens.accepts(strings.TrimSpace(strings.TrimPrefix(auth, "Bearer "))) {
 			writeError(w, http.StatusUnauthorized, errors.New("missing or invalid admin token"))
 			return
 		}
@@ -132,6 +151,7 @@ type server struct {
 	pool     Pool
 	options  Options
 	sessions *sessionStore
+	tokens   *tokenStore
 	mu       sync.Mutex
 	started  time.Time
 }
@@ -189,7 +209,7 @@ func (s *server) status(w http.ResponseWriter, _ *http.Request) {
 		"idle_timeout_seconds": int64(cfg.IdleTimeout.Seconds()),
 		"rotate_after_seconds": int64(cfg.RotateAfter.Seconds()),
 		"rotate_requests":      cfg.RotateRequests,
-		"token_required":       s.options.AdminToken != "",
+		"token_required":       s.tokens.any(),
 	})
 }
 
@@ -231,6 +251,9 @@ func (s *server) saveConfig(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	// Token entries are managed through /v1/tokens and must survive a full
+	// config save from the console form.
+	candidate.Admin.Tokens = s.tokens.list()
 	if err := config.SaveAtomic(s.options.ConfigPath, candidate); err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
@@ -247,11 +270,32 @@ func (s *server) saveConfig(w http.ResponseWriter, r *http.Request) {
 // getConfigDefaults returns the built-in defaults for the console's "restore
 // defaults" action. The webui section is deliberately left unset so the
 // restore keeps the blank-means-keep semantics instead of persisting
-// admin/admin.
-func (s *server) getConfigDefaults(w http.ResponseWriter, _ *http.Request) {
+// admin/admin. The ?mode=per_ipv6 variant defaults to the per-IPv6 layout:
+// a widened port range that holds max_leases and a few always-on ports.
+func (s *server) getConfigDefaults(w http.ResponseWriter, r *http.Request) {
 	defaults := config.Default()
+	if r.URL.Query().Get("mode") == config.ModePerIPv6 {
+		defaults.SOCKS.Mode = config.ModePerIPv6
+		defaults.SOCKS.ListenAddress = "[::]:10080"
+		defaults.SOCKS.PortStart = 20000
+		defaults.SOCKS.PortEnd = 20000 + defaults.MaxLeases - 1
+		defaults.SOCKS.AlwaysOnPorts = []int{20000, 20001, 20002}
+	}
 	defaults.Admin.WebUI = nil
 	writeJSON(w, http.StatusOK, defaults)
+}
+
+// restart triggers the configured restart callback after the response has
+// been written, so the console sees a clean answer. Deployment supervisors
+// (docker restart policy, systemd Restart=always) bring the process back up
+// with the freshly saved configuration.
+func (s *server) restart(w http.ResponseWriter, _ *http.Request) {
+	if s.options.OnRestart == nil {
+		writeError(w, http.StatusServiceUnavailable, errors.New("service restart is not enabled"))
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"restarting": true})
+	s.options.OnRestart()
 }
 
 // defaultEgressURL is the exit-address service used by proxy probes. It

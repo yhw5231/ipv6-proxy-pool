@@ -306,3 +306,32 @@ func TestPerIPv6PortRangeValidationMessage(t *testing.T) {
 		t.Fatalf("Validate() with an exactly-sized range error = %v", err)
 	}
 }
+
+func TestNamedTokensValidation(t *testing.T) {
+	valid := Default()
+	valid.Admin.Tokens = []NamedToken{{Name: "client-a", Token: "0123456789abcdef"}}
+	if err := valid.Validate(); err != nil {
+		t.Fatalf("Validate() with valid named token error = %v", err)
+	}
+
+	blankName := Default()
+	blankName.Admin.Tokens = []NamedToken{{Name: "  ", Token: "0123456789abcdef"}}
+	if err := blankName.Validate(); err == nil || !strings.Contains(err.Error(), "name must not be empty") {
+		t.Fatalf("Validate() blank token name error = %v", err)
+	}
+
+	shortToken := Default()
+	shortToken.Admin.Tokens = []NamedToken{{Name: "client-a", Token: "short"}}
+	if err := shortToken.Validate(); err == nil || !strings.Contains(err.Error(), "at least 8 characters") {
+		t.Fatalf("Validate() short token error = %v", err)
+	}
+
+	duplicate := Default()
+	duplicate.Admin.Tokens = []NamedToken{
+		{Name: "client-a", Token: "0123456789abcdef"},
+		{Name: "client-a", Token: "fedcba9876543210"},
+	}
+	if err := duplicate.Validate(); err == nil || !strings.Contains(err.Error(), "duplicate name") {
+		t.Fatalf("Validate() duplicate token name error = %v", err)
+	}
+}

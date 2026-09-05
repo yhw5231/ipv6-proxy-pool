@@ -45,13 +45,26 @@ type AdminConfig struct {
 	ListenAddress string `json:"listen_address"`
 	// Token, when set, requires `Authorization: Bearer <token>` on every /v1/*
 	// request. It lets remote clients safely request and manage proxy leases.
+	// Kept for compatibility; new deployments should use the named Tokens list
+	// and manage them from the console, where they take effect immediately.
 	Token string `json:"token,omitempty"`
+	// Tokens lists named client bearer tokens. Every entry is a
+	// human-readable name paired with a token that any number of clients may
+	// reuse. A request passes authentication when its bearer token matches
+	// this list or the legacy Token field. Names must be unique.
+	Tokens []NamedToken `json:"tokens,omitempty"`
 	// WebUI holds the credentials required before the web console shows the
 	// panel. A nil value (or one with blank fields) means "unset": the
 	// console shows blank credential fields and WebUICredentials falls back
 	// to WebUIDefaultUsername / WebUIDefaultPassword so every deployment
 	// starts out logging in with admin / admin.
 	WebUI *WebUIConfig `json:"webui,omitempty"`
+}
+
+// NamedToken pairs a human-readable name with a reusable client bearer token.
+type NamedToken struct {
+	Name  string `json:"name"`
+	Token string `json:"token"`
 }
 
 type WebUIConfig struct {
@@ -165,6 +178,20 @@ func (c Config) Validate() error {
 	}
 	if len(c.Admin.Token) > 0 && len(c.Admin.Token) < 8 {
 		return errors.New("admin.token must be at least 8 characters when set")
+	}
+	seenTokenNames := make(map[string]struct{}, len(c.Admin.Tokens))
+	for _, named := range c.Admin.Tokens {
+		name := strings.TrimSpace(named.Name)
+		if name == "" {
+			return errors.New("admin.tokens: name must not be empty")
+		}
+		if _, dup := seenTokenNames[name]; dup {
+			return fmt.Errorf("admin.tokens: duplicate name %q", name)
+		}
+		seenTokenNames[name] = struct{}{}
+		if len(named.Token) < 8 {
+			return fmt.Errorf("admin.tokens: token for %q must be at least 8 characters", name)
+		}
 	}
 	if c.Admin.WebUI != nil && len(c.Admin.WebUI.Password) > 0 && len(c.Admin.WebUI.Password) < 4 {
 		return errors.New("admin.webui.password must be at least 4 characters when set")

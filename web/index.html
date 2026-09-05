@@ -60,6 +60,7 @@
       <button class="tab is-active" type="button" data-tab="overview">运行状态</button>
       <button class="tab" type="button" data-tab="leases">代理租约</button>
       <button class="tab" type="button" data-tab="connection">客户端接入</button>
+      <button class="tab" type="button" data-tab="tokens">客户端令牌</button>
       <button class="tab" type="button" data-tab="configuration">配置</button>
     </nav>
 
@@ -210,12 +211,40 @@
       </section>
     </section>
 
+    <!-- ============ 客户端令牌 ============ -->
+    <section id="tokensPanel" class="tab-panel" data-panel="tokens" hidden>
+      <section class="content-section">
+        <div class="section-heading">
+          <div>
+            <h2>客户端令牌</h2>
+            <p>命名令牌用于客户端程序访问管理 API（Authorization: Bearer）。同一令牌可被多个客户端复用；创建/轮换/删除立即生效，无需重启。</p>
+          </div>
+          <form id="tokenCreateForm" class="token-create">
+            <label class="field">
+              <span class="sr-only">令牌名称</span>
+              <input id="tokenName" name="tokenName" type="text" placeholder="令牌名称，如 client-a" autocomplete="off" required>
+            </label>
+            <button id="tokenCreateButton" type="submit" class="primary-button">新建令牌</button>
+          </form>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>名称</th><th>令牌值</th><th>操作</th></tr></thead>
+            <tbody id="tokenTableBody"><tr><td colspan="3" class="empty-state">正在加载令牌</td></tr></tbody>
+          </table>
+        </div>
+      </section>
+    </section>
+
     <!-- ============ 配置 ============ -->
     <section id="configurationPanel" class="tab-panel" data-panel="configuration" hidden>
       <form id="configForm" class="config-form" autocomplete="off">
         <div id="restartBanner" class="restart-banner" hidden>
-          <strong>配置已写入，重启服务后生效。</strong>
-          <span>systemd：sudo systemctl restart ipv6-proxy-pool · Docker：docker compose restart</span>
+          <div class="restart-banner-text">
+            <strong>配置已写入，重启服务后生效。</strong>
+            <span>systemd：sudo systemctl restart ipv6-proxy-pool · Docker：docker compose restart</span>
+          </div>
+          <button id="restartServiceButton" type="button" class="primary-button">重启服务</button>
         </div>
 
         <section class="content-section">
