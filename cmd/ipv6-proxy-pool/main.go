@@ -23,6 +23,11 @@ import (
 	"ipv6-proxy-pool/internal/socks5"
 )
 
+// version identifies the serving build: the short git commit hash, injected
+// at build time via -ldflags "-X main.version=<hash>". Local builds without
+// the flag report "dev".
+var version = "dev"
+
 func main() {
 	if len(os.Args) > 1 && os.Args[1] == "client" {
 		runClient(os.Args[2:])
@@ -106,6 +111,7 @@ func run(ctx context.Context, cfg config.Config, configPath string) error {
 			ConfigPath:      configPath,
 			RuntimeConfig:   cfg,
 			AdminToken:      cfg.Admin.Token,
+			Version:         version,
 			Web:             os.DirFS("web"),
 			ListenerManager: listenerManager,
 			Probe:           socks5.ProbeProxy,

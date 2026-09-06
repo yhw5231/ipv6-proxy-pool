@@ -1,5 +1,4 @@
 ipv6-incognito
-.git
 .gitignore
 *.exe
 *.log

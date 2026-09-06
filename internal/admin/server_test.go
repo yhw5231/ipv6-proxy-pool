@@ -641,7 +641,7 @@ func TestConfiguredWebUICredentialsOverrideDefaults(t *testing.T) {
 	}
 }
 
-func TestSaveConfigKeepsDefaultsForOmittedFields(t *testing.T) {
+func TestSaveConfigPartialPayloadKeepsRunningValues(t *testing.T) {
 	pool, err := lease.NewPool(lease.Options{
 		Prefix:    "2001:db8::/64",
 		MaxLeases: 4,
@@ -651,11 +651,22 @@ func TestSaveConfigKeepsDefaultsForOmittedFields(t *testing.T) {
 	}
 	path := filepath.Join(t.TempDir(), "config.json")
 	handler := HandlerWithOptions(pool, Options{
-		RuntimeConfig: config.Config{MinLeases: 1, MaxLeases: 4},
-		ConfigPath:    path,
+		RuntimeConfig: config.Config{
+			IPv6Prefix: "2001:db8::/64",
+			MinLeases:  2,
+			MaxLeases:  4,
+			SOCKS: config.SOCKSConfig{
+				Mode:          config.ModeMultiplex,
+				ListenAddress: "[::]:10080",
+				PortStart:     20000,
+				PortEnd:       20003,
+			},
+			Admin: config.AdminConfig{ListenAddress: "[::]:10070"},
+		},
+		ConfigPath: path,
 	})
 
-	// 仅提交 ipv6_prefix，其他字段必须回落到内置默认值而不是被清零。
+	// 仅提交 ipv6_prefix：其他字段必须保持当前运行值而不是被默认值覆盖。
 	save := httptest.NewRequest(http.MethodPut, "/v1/config", strings.NewReader(`{"ipv6_prefix": "2001:db8:1::/64"}`))
 	save.Header.Set("Content-Type", "application/json")
 	saveResult := httptest.NewRecorder()
@@ -668,18 +679,65 @@ func TestSaveConfigKeepsDefaultsForOmittedFields(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load saved config: %v", err)
 	}
-	expected := config.Default()
 	if saved.IPv6Prefix != "2001:db8:1::/64" {
 		t.Fatalf("saved ipv6_prefix = %q, want the submitted prefix", saved.IPv6Prefix)
 	}
-	if saved.MinLeases != expected.MinLeases {
-		t.Fatalf("omitted min_leases = %d, want default %d", saved.MinLeases, expected.MinLeases)
+	if saved.MinLeases != 2 {
+		t.Fatalf("omitted min_leases = %d, want the running value 2", saved.MinLeases)
 	}
-	if saved.MaxLeases != expected.MaxLeases {
-		t.Fatalf("omitted max_leases = %d, want default %d", saved.MaxLeases, expected.MaxLeases)
+	if saved.MaxLeases != 4 {
+		t.Fatalf("omitted max_leases = %d, want the running value 4", saved.MaxLeases)
 	}
-	if saved.SOCKS.PortStart != expected.SOCKS.PortStart {
-		t.Fatalf("omitted socks.port_start = %d, want default %d", saved.SOCKS.PortStart, expected.SOCKS.PortStart)
+	if saved.SOCKS.PortStart != 20000 {
+		t.Fatalf("omitted socks.port_start = %d, want the running value 20000", saved.SOCKS.PortStart)
+	}
+}
+
+func TestSaveConfigKeepsExistingWebUIWhenOmitted(t *testing.T) {
+	pool, err := lease.NewPool(lease.Options{
+		Prefix:    "2001:db8::/64",
+		MaxLeases: 32,
+	})
+	if err != nil {
+		t.Fatalf("NewPool: %v", err)
+	}
+	path := filepath.Join(t.TempDir(), "config.json")
+	handler := HandlerWithOptions(pool, Options{
+		RuntimeConfig: config.Config{
+			MinLeases: 2,
+			MaxLeases: 32,
+			Admin: config.AdminConfig{
+				ListenAddress: "[::]:10070",
+				WebUI:         &config.WebUIConfig{Username: "bob", Password: "s3cret"},
+			},
+		},
+		ConfigPath: path,
+	})
+
+	// 分类保存（请求体不带 webui）：已配置的控制台登录必须原样保留。
+	save := httptest.NewRequest(http.MethodPut, "/v1/config", strings.NewReader(`{
+		"ipv6_prefix": "2001:db8::/64",
+		"min_leases": 4,
+		"max_leases": 32,
+		"socks": {"mode": "multiplex", "listen_address": "[::]:10080", "port_start": 20000, "port_end": 21023},
+		"admin": {"listen_address": "[::]:10070"}
+	}`))
+	save.Header.Set("Content-Type", "application/json")
+	saveResult := httptest.NewRecorder()
+	handler.ServeHTTP(saveResult, save)
+	if saveResult.Code != http.StatusOK {
+		t.Fatalf("save status = %d, body = %s", saveResult.Code, saveResult.Body.String())
+	}
+
+	saved, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load saved config: %v", err)
+	}
+	if saved.Admin.WebUI == nil || saved.Admin.WebUI.Username != "bob" || saved.Admin.WebUI.Password != "s3cret" {
+		t.Fatalf("existing webui was lost, got %+v", saved.Admin.WebUI)
+	}
+	if saved.MinLeases != 4 {
+		t.Fatalf("submitted min_leases = %d, want 4", saved.MinLeases)
 	}
 }
 

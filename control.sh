@@ -97,7 +97,8 @@ resolve_binary() {
   export PATH="$PATH:/usr/local/go/bin:/usr/lib/go/bin"
   if command -v go >/dev/null 2>&1; then
     info "使用 Go: $(command -v go) ($({ go version; } 2>/dev/null || echo '未知版本'))"
-    if (cd "$SCRIPT_DIR" && go build -trimpath -ldflags="-s -w" -o "bin/${BINARY_NAME}" "./cmd/${BINARY_NAME}"); then
+    VERSION="$(git -C "$SCRIPT_DIR" rev-parse --short HEAD 2>/dev/null || echo dev)"
+    if (cd "$SCRIPT_DIR" && go build -trimpath -ldflags="-s -w -X main.version=${VERSION}" -o "bin/${BINARY_NAME}" "./cmd/${BINARY_NAME}"); then
       printf '%s' "${SCRIPT_DIR}/bin/${BINARY_NAME}"
       return 0
     fi
@@ -112,7 +113,8 @@ build_fresh_binary() {
   export PATH="$PATH:/usr/local/go/bin:/usr/lib/go/bin"
   if command -v go >/dev/null 2>&1; then
     info "使用 Go: $(command -v go) ($({ go version; } 2>/dev/null || echo '未知版本'))"
-    if (cd "$SCRIPT_DIR" && go build -trimpath -ldflags="-s -w" -o "bin/${BINARY_NAME}" "./cmd/${BINARY_NAME}"); then
+    VERSION="$(git -C "$SCRIPT_DIR" rev-parse --short HEAD 2>/dev/null || echo dev)"
+    if (cd "$SCRIPT_DIR" && go build -trimpath -ldflags="-s -w -X main.version=${VERSION}" -o "bin/${BINARY_NAME}" "./cmd/${BINARY_NAME}"); then
       printf '%s' "${SCRIPT_DIR}/bin/${BINARY_NAME}"
       return 0
     fi

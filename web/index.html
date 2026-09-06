@@ -31,6 +31,7 @@
       <p id="loginError" class="modal-error" role="alert" hidden></p>
       <button id="loginSubmit" class="primary-button" type="submit">登录</button>
       <small class="login-hint">默认账号 admin / admin，可在控制台「配置」页修改。</small>
+      <small id="buildVersion" class="login-hint" aria-live="polite">版本加载中…</small>
     </form>
   </div>
 
@@ -253,7 +254,10 @@
               <h2>代理模式</h2>
               <p>所有请求复用单端口，或让每个端口绑定独立 IPv6。</p>
             </div>
-            <span id="configDirtyBadge" class="dirty-badge" hidden>有未保存的修改</span>
+            <div class="header-actions">
+              <span id="configDirtyBadge" class="dirty-badge" hidden>有未保存的修改</span>
+              <button id="saveModeButton" type="button" class="button-small secondary-button" title="仅保存此分类，其他设置保持不变">保存此分类</button>
+            </div>
           </div>
           <fieldset class="segmented-control">
             <legend class="sr-only">代理模式</legend>
@@ -273,6 +277,7 @@
               <h2>地址池与回收</h2>
               <p>出口 IPv6 网段、常驻保底数量与空闲回收策略。</p>
             </div>
+            <button id="savePoolButton" type="button" class="button-small secondary-button" title="仅保存此分类，其他设置保持不变">保存此分类</button>
           </div>
           <div class="form-grid">
             <label class="field field--full">
@@ -314,6 +319,7 @@
               <h2>监听与安全</h2>
               <p>SOCKS5 与管理 API 的监听参数、端口范围和管理令牌。</p>
             </div>
+            <button id="saveSecurityButton" type="button" class="button-small secondary-button" title="仅保存此分类，其他设置保持不变">保存此分类</button>
           </div>
           <div class="form-grid">
             <label class="field">

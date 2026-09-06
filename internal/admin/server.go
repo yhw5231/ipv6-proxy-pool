@@ -69,6 +69,9 @@ type Options struct {
 	// (docker restart policy or systemd) brings it back up with the new
 	// configuration.
 	OnRestart func()
+	// Version identifies the build (short git commit) serving this API. It is
+	// reported by /healthz and /v1/status and shown in the console.
+	Version string
 }
 
 // Handler preserves the original lease-only API constructor.
@@ -166,7 +169,7 @@ type updateLeaseRequest struct {
 }
 
 func (s *server) health(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok", "version": s.options.Version})
 }
 
 func (s *server) status(w http.ResponseWriter, _ *http.Request) {
@@ -210,6 +213,7 @@ func (s *server) status(w http.ResponseWriter, _ *http.Request) {
 		"rotate_after_seconds": int64(cfg.RotateAfter.Seconds()),
 		"rotate_requests":      cfg.RotateRequests,
 		"token_required":       s.tokens.any(),
+		"version":              s.options.Version,
 	})
 }
 
@@ -230,16 +234,18 @@ func (s *server) saveConfig(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, fmt.Errorf("read config payload: %w", err))
 		return
 	}
-	candidate := config.Default()
+	// Decode onto the running configuration so a partial payload (a console
+	// category save, or a script that touches one section) only overrides the
+	// submitted fields and keeps every other setting exactly as it runs.
+	candidate := s.options.RuntimeConfig
 	if err := decodeJSONBytes(data, &candidate); err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	// A payload that never mentions webui must not turn the default
-	// admin/admin into persisted credentials: like Load, treat an absent
-	// webui section as "unset".
+	// Blank or absent webui credentials keep the current console login
+	// ("留空保持不变"); only an explicitly non-blank section replaces it.
 	if !config.WebUIExplicit(data) {
-		candidate.Admin.WebUI = nil
+		candidate.Admin.WebUI = s.options.RuntimeConfig.Admin.WebUI
 	}
 	// A new IPv6 prefix takes effect immediately: the whole pool moves to the
 	// new prefix without restarting (listeners bind host:port, never the lease
@@ -258,7 +264,9 @@ func (s *server) saveConfig(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	s.options.RuntimeConfig.IPv6Prefix = candidate.IPv6Prefix
+	// 同步运行时配置：/v1/config 立即反映新值，后续分类保存也以最新
+	// 保存值（而非启动值）为基线合并，避免覆盖此前保存的其他分类。
+	s.options.RuntimeConfig = candidate
 	writeJSON(w, http.StatusOK, map[string]any{
 		"saved":             true,
 		"restart_required":  true,

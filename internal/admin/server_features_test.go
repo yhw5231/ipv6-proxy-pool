@@ -328,3 +328,39 @@ func TestProxyTestEndpointByPortPerIPv6(t *testing.T) {
 		t.Fatalf("probe called with proxy=%q lease=%q, want 127.0.0.1:20000 / client-a", gotProxy, gotLeaseID)
 	}
 }
+
+func TestHealthAndStatusReportVersion(t *testing.T) {
+	handler := tokenTestHandler(t, Options{
+		RuntimeConfig: config.Config{
+			IPv6Prefix: "2001:db8::/64",
+			MaxLeases:  4,
+			SOCKS:      config.SOCKSConfig{Mode: config.ModeMultiplex, ListenAddress: "[::]:10080"},
+		},
+		Version: "abc1234",
+	})
+
+	healthResult := httptest.NewRecorder()
+	handler.ServeHTTP(healthResult, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+	var health struct {
+		Status  string `json:"status"`
+		Version string `json:"version"`
+	}
+	if err := json.NewDecoder(healthResult.Body).Decode(&health); err != nil {
+		t.Fatalf("decode healthz: %v", err)
+	}
+	if health.Status != "ok" || health.Version != "abc1234" {
+		t.Fatalf("healthz payload = %+v", health)
+	}
+
+	statusResult := httptest.NewRecorder()
+	handler.ServeHTTP(statusResult, httptest.NewRequest(http.MethodGet, "/v1/status", nil))
+	var status struct {
+		Version string `json:"version"`
+	}
+	if err := json.NewDecoder(statusResult.Body).Decode(&status); err != nil {
+		t.Fatalf("decode status: %v", err)
+	}
+	if status.Version != "abc1234" {
+		t.Fatalf("status version = %q, want abc1234", status.Version)
+	}
+}

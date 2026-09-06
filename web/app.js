@@ -55,6 +55,13 @@
   }
 
   async function bootstrapAuth() {
+    // 登录页展示构建版本（git commit），便于核对部署版本。
+    try {
+      const health = await fetch('/healthz');
+      const payload = await health.json();
+      const element = $('buildVersion');
+      if (element) element.textContent = `版本 ${payload.version || 'dev'}`;
+    } catch (_) { /* 版本不可用时保持占位文案 */ }
     try {
       const response = await fetch('/v1/auth/session');
       const session = await response.json();
@@ -403,6 +410,7 @@
     const idle = durationToSeconds(cfg.idle_timeout);
     const rotateAfter = durationToSeconds(cfg.rotate_after);
     const entries = [
+      ['版本', state.status?.version || '-'],
       ['IPv6 前缀', cfg.ipv6_prefix],
       ['SOCKS 模式', cfg.socks?.mode === 'per_ipv6' ? '一端口一 IPv6（per_ipv6）' : '单端口复用（multiplex）'],
       ['SOCKS 监听地址', cfg.socks?.listen_address],
@@ -836,6 +844,73 @@
     $('configDirtyBadge').hidden = !dirty;
   }
 
+  // 分类保存：只收集该分类的字段提交，后端合并到当前运行配置，
+  // 其他分类的设置保持不变。
+  function readConfigSection(section) {
+    if (section === 'mode') {
+      const socks = {
+        mode: document.querySelector('input[name="mode"]:checked')?.value || 'multiplex',
+        always_on_ports: parseAlwaysOnPorts(getValue('alwaysOnPorts')),
+      };
+      // per_ipv6 的范围联动可能改过端口范围结束值，一并提交保证校验通过。
+      if (socks.mode === 'per_ipv6') {
+        socks.port_start = Number(getValue('portStart'));
+        socks.port_end = Number(getValue('portEnd'));
+      }
+      return { socks };
+    }
+    if (section === 'pool') {
+      return {
+        ipv6_prefix: getValue('ipv6Prefix').trim(),
+        min_leases: Number(getValue('minLeases')),
+        max_leases: Number(getValue('maxLeases')),
+        idle_timeout: secondsToDuration(getValue('idleTimeout')),
+        rotate_after: secondsToDuration(getValue('rotateAfter')),
+        rotate_requests: Number(getValue('rotateRequests')),
+      };
+    }
+    if (section === 'security') {
+      return {
+        socks: {
+          listen_address: getValue('socksListenAddress').trim(),
+          port_start: Number(getValue('portStart')),
+          port_end: Number(getValue('portEnd')),
+        },
+        admin: {
+          listen_address: getValue('adminListenAddress').trim(),
+          // 留空 = 保持现有令牌（表单不回显令牌）。
+          token: getValue('adminToken').trim() || (state.config?.admin?.token || ''),
+          webui: {
+            username: getValue('webuiUsername').trim() || (state.config?.admin?.webui?.username || ''),
+            // 留空 = 保持现有密码（表单不回显密码）。
+            password: getValue('webuiPassword') || (state.config?.admin?.webui?.password || '')
+          }
+        }
+      };
+    }
+    return {};
+  }
+
+  async function saveConfigSection(section, label) {
+    try {
+      // 保存前兜底：per_ipv6 模式下端口范围必须 ≥ 最大租约数。
+      ensurePerIPv6PortRange({ announce: true });
+      const result = await request('/v1/config', { method: 'PUT', body: JSON.stringify(readConfigSection(section)) });
+      if (result.config) state.config = result.config;
+      setConfigDirty(false);
+      const message = result.prefix_reassigned
+        ? `${label}已保存：IPv6 前缀已即时生效，其余设置重启后生效。`
+        : `${label}已保存，重启服务后生效。`;
+      $('saveMessage').textContent = message;
+      notify(message);
+      $('restartBanner').hidden = false;
+      if (result.prefix_reassigned) await refresh();
+    } catch (error) {
+      $('saveMessage').textContent = error.message;
+      notify(error.message, 'error');
+    }
+  }
+
   // ---------- 刷新与自动刷新 ----------
 
   async function refresh() {
@@ -954,6 +1029,10 @@ try {
       button.disabled = false;
     }
   });
+
+    $('saveModeButton')?.addEventListener('click', () => saveConfigSection('mode', '代理模式设置'));
+  $('savePoolButton')?.addEventListener('click', () => saveConfigSection('pool', '地址池设置'));
+  $('saveSecurityButton')?.addEventListener('click', () => saveConfigSection('security', '监听与安全设置'));
 
   $('configForm')?.addEventListener('input', () => setConfigDirty(true));
   $('configForm')?.addEventListener('change', (event) => {
