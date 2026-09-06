@@ -190,7 +190,12 @@ func TestProxyTestEndpointMultiplex(t *testing.T) {
 		Probe: func(_ context.Context, proxyAddr, _ string, leaseID string) (string, error) {
 			gotProxy = proxyAddr
 			gotLeaseID = leaseID
-			return "2001:db8::1", nil
+			// 模拟真实探测：返回该租约当前分配的地址（随机分配，不能写死）。
+			entry, ok := pool.Get(leaseID)
+			if !ok {
+				return "", errors.New("lease not found")
+			}
+			return entry.IPv6, nil
 		},
 	})
 
@@ -212,7 +217,7 @@ func TestProxyTestEndpointMultiplex(t *testing.T) {
 	if err := json.NewDecoder(saveResult.Body).Decode(&payload); err != nil {
 		t.Fatalf("decode test response: %v", err)
 	}
-	if !payload.OK || payload.ExitIPv6 != "2001:db8::1" || !payload.IPv6Match || payload.ExpectedIPv6 != "2001:db8::1" {
+	if !payload.OK || !payload.IPv6Match || payload.ExitIPv6 != payload.ExpectedIPv6 || payload.ExitIPv6 == "" {
 		t.Fatalf("test payload = %+v", payload)
 	}
 	if gotProxy != "127.0.0.1:10080" || gotLeaseID != "client-a" {

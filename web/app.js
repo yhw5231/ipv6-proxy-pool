@@ -13,6 +13,7 @@
     includeStandby: false,
     sort: { key: 'id', dir: 1 },
     configDirty: false,
+    configLoaded: false,
     refreshTimer: null,
     lastFocused: null,
     loggedIn: false,
@@ -736,26 +737,30 @@
 
   function renderConfig() { renderConfigFrom(state.config); }
 
+  // 以现有配置参数渲染设置表单；字段缺失时回退到空字符串/空列表，
+  // 保证任何来源的配置对象都不会让表单显示空白占位。
   function renderConfigFrom(cfg) {
     if (!cfg) return;
-    putValue('ipv6Prefix', cfg.ipv6_prefix);
-    putValue('minLeases', cfg.min_leases);
-    putValue('maxLeases', cfg.max_leases);
+    const socks = cfg.socks || {};
+    const admin = cfg.admin || {};
+    putValue('ipv6Prefix', cfg.ipv6_prefix ?? '');
+    putValue('minLeases', cfg.min_leases ?? '');
+    putValue('maxLeases', cfg.max_leases ?? '');
     putValue('idleTimeout', durationToSeconds(cfg.idle_timeout));
     putValue('rotateAfter', durationToSeconds(cfg.rotate_after));
-    putValue('rotateRequests', cfg.rotate_requests);
-    putValue('socksListenAddress', cfg.socks.listen_address);
-    putValue('portStart', cfg.socks.port_start);
-    putValue('portEnd', cfg.socks.port_end);
-    putValue('alwaysOnPorts', (cfg.socks.always_on_ports || []).join(', '));
-    putValue('adminListenAddress', cfg.admin.listen_address);
+    putValue('rotateRequests', cfg.rotate_requests ?? '');
+    putValue('socksListenAddress', socks.listen_address ?? '');
+    putValue('portStart', socks.port_start ?? '');
+    putValue('portEnd', socks.port_end ?? '');
+    putValue('alwaysOnPorts', (socks.always_on_ports || []).join(', '));
+    putValue('adminListenAddress', admin.listen_address ?? '');
     // 出于安全考虑不回显令牌；留空提交表示保持现有令牌不变。
     putValue('adminToken', '');
     // 用户名同样不回显默认值；留空提交表示保持现有用户名不变。
-    putValue('webuiUsername', cfg.admin?.webui?.username || '');
+    putValue('webuiUsername', admin.webui?.username || '');
     // 密码同样不回显；留空提交表示保持现有密码不变。
     putValue('webuiPassword', '');
-    const mode = document.querySelector(`input[name="mode"][value="${cfg.socks.mode}"]`);
+    const mode = document.querySelector(`input[name="mode"][value="${socks.mode || 'multiplex'}"]`);
     if (mode) mode.checked = true;
     updateModeDependentFields();
   }
@@ -931,7 +936,12 @@ try {
       renderConnection();
       renderLeases();
       renderTokens();
-      if (!state.configDirty) renderConfig();
+      // 首次拿到配置必须渲染设置表单（携带现有参数），之后仅在用户
+      // 没有未保存修改时跟随刷新重填，避免覆盖正在编辑的内容。
+      if (!state.configDirty || !state.configLoaded) {
+        renderConfig();
+        state.configLoaded = true;
+      }
       const stamp = $('lastRefreshTime');
       if (stamp) stamp.textContent = `更新于 ${new Date().toLocaleTimeString()}`;
     } catch (error) {
@@ -959,6 +969,11 @@ try {
       panel.hidden = !active;
       panel.classList.toggle('is-active', active);
     });
+    // 打开设置页签时若配置已就绪且无未保存修改，立即按现有参数渲染，
+    // 避免首次进入时表单显示空白。
+    if (name === 'configuration' && state.config && !state.configDirty) {
+      renderConfig();
+    }
   }
 
   function tabFromHash() {

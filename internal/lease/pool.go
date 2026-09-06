@@ -40,6 +40,10 @@ type Options struct {
 	PortStart      int
 	PortEnd        int
 	Now            func() time.Time
+	// SequentialAddresses, when true, hands out host addresses in ascending
+	// order (::1, ::2, …). The default is a random address per lease so
+	// consecutive leases do not reveal a predictable sequence.
+	SequentialAddresses bool
 	// OnRelease is invoked after a lease has been removed from the pool for any
 	// reason (explicit release, idle release, recycle). It lets callers tear
 	// down resources attached to the lease, such as per-IPv6 listeners. It must
@@ -557,11 +561,21 @@ func (p *Pool) newEntryLocked(id string, role string, persistent bool, now time.
 }
 
 func (p *Pool) nextAddressLocked() (net.IP, error) {
-	for attempts := 0; attempts <= p.options.MaxLeases; attempts++ {
-		p.nextIndex++
-		candidate, err := p.generator.FromIndex(p.nextIndex)
-		if err != nil {
-			return nil, err
+	for attempts := 0; attempts <= p.options.MaxLeases*2+256; attempts++ {
+		var candidate net.IP
+		if p.options.SequentialAddresses {
+			p.nextIndex++
+			next, err := p.generator.FromIndex(p.nextIndex)
+			if err != nil {
+				return nil, err
+			}
+			candidate = next
+		} else {
+			random, err := p.generator.Random()
+			if err != nil {
+				return nil, err
+			}
+			candidate = random
 		}
 		used := false
 		for _, current := range p.leases {

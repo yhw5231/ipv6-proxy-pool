@@ -2,6 +2,7 @@ package lease
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -622,6 +623,61 @@ func TestAcquirePortUsesRequestedPortAndReusesAfterRelease(t *testing.T) {
 	}
 	if reused.Port != 20001 {
 		t.Fatalf("reused port = %d, want 20001", reused.Port)
+	}
+}
+
+func TestAcquireUsesRandomAddressesByDefault(t *testing.T) {
+	pool, err := NewPool(Options{
+		Prefix:    "2001:db8::/64",
+		MinLeases: 2,
+		MaxLeases: 8,
+	})
+	if err != nil {
+		t.Fatalf("NewPool: %v", err)
+	}
+	seen := make(map[string]struct{}, 6)
+	for i := 0; i < 6; i++ {
+		item, err := pool.Acquire(fmt.Sprintf("client-%d", i), false)
+		if err != nil {
+			t.Fatalf("Acquire client-%d: %v", i, err)
+		}
+		if !strings.HasPrefix(item.IPv6, "2001:db8:") {
+			t.Fatalf("address %s is outside the prefix", item.IPv6)
+		}
+		if _, dup := seen[item.IPv6]; dup {
+			t.Fatalf("duplicate address %s handed out twice", item.IPv6)
+		}
+		seen[item.IPv6] = struct{}{}
+	}
+	if len(seen) != 6 {
+		t.Fatalf("expected 6 distinct addresses, got %d", len(seen))
+	}
+}
+
+func TestSequentialAddressesOption(t *testing.T) {
+	pool, err := NewPool(Options{
+		Prefix:              "2001:db8::/64",
+		MaxLeases:           8,
+		SequentialAddresses: true,
+	})
+	if err != nil {
+		t.Fatalf("NewPool: %v", err)
+	}
+	first, err := pool.Acquire("first", false)
+	if err != nil {
+		t.Fatalf("Acquire first: %v", err)
+	}
+	second, err := pool.Acquire("second", false)
+	if err != nil {
+		t.Fatalf("Acquire second: %v", err)
+	}
+	third, err := pool.Acquire("third", false)
+	if err != nil {
+		t.Fatalf("Acquire third: %v", err)
+	}
+	if first.IPv6 != "2001:db8::1" || second.IPv6 != "2001:db8::2" || third.IPv6 != "2001:db8::3" {
+		t.Fatalf("sequential addresses = %s, %s, %s; want ::1, ::2, ::3",
+			first.IPv6, second.IPv6, third.IPv6)
 	}
 }
 
